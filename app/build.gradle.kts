@@ -1,3 +1,4 @@
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -16,6 +17,7 @@ android {
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         vectorDrawables {
             useSupportLibrary = true
         }
@@ -25,12 +27,15 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+
             signingConfig = signingConfigs.getByName("debug")
         }
+
         debug {
             applicationIdSuffix = ".debug"
             isDebuggable = true
@@ -63,6 +68,7 @@ android {
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
+
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
@@ -79,7 +85,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // Image loading for local merchant QRs (file storage, no internet)
+    // Image loading
     implementation("io.coil-kt:coil-compose:2.7.0")
 
     // Coroutines
@@ -89,7 +95,10 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
-    // Unit Testing (Pure JVM tests for parser, filter, Spanish numbers)
+    // Unit testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+
+    // JSON para las pruebas locales
+    testImplementation("org.json:json:20240303")
 }
