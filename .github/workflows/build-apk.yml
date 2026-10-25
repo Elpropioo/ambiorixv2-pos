@@ -1,10 +1,8 @@
-
 name: Build Ambiorix Pay APK
 
 on:
   push:
     branches: [main, master]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -35,7 +33,7 @@ jobs:
             -not -path '*/.gradle/*' -print -quit)"
 
           if [ -z "$FILE" ]; then
-            echo "ERROR: No se encontró el archivo settings.gradle."
+            echo "ERROR: No se encontró settings.gradle."
             exit 1
           fi
 
@@ -45,7 +43,7 @@ jobs:
           test -f "$PROJECT_DIR/gradlew"
           test -d "$PROJECT_DIR/app"
 
-          echo "Proyecto Android encontrado: $PROJECT_DIR"
+          echo "Proyecto encontrado: $PROJECT_DIR"
 
       - name: Configure Android SDK
         shell: bash
@@ -60,7 +58,7 @@ jobs:
             -type f -name sdkmanager -print -quit)"
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: Android SDK command-line tools not found."
+            echo "ERROR: No se encontró sdkmanager."
             exit 1
           fi
 
@@ -76,16 +74,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           chmod +x ./gradlew
+
+          echo "Verificando archivos del wrapper..."
+          test -f gradle/wrapper/gradle-wrapper.jar
+          test -f gradle/wrapper/gradle-wrapper.properties
+
+          echo "Versión de Gradle:"
           ./gradlew --version --no-daemon
 
       - name: Run unit tests
         working-directory: ${{ env.PROJECT_DIR }}
-        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon --stacktrace tasks
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest
 
       - name: Build debug APK
         working-directory: ${{ env.PROJECT_DIR }}
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon --stacktrace assembleDebug
 
       - name: Verify and prepare APK
         working-directory: ${{ env.PROJECT_DIR }}
@@ -97,12 +109,13 @@ jobs:
             -maxdepth 1 -type f -name '*.apk' -print -quit)"
 
           if [ -z "$APK" ]; then
-            echo "ERROR: No debug APK was generated."
+            echo "ERROR: No se generó ningún APK."
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/dist"
           cp "$APK" "$GITHUB_WORKSPACE/dist/AmbiorixPay-debug.apk"
+
           ls -lh "$GITHUB_WORKSPACE/dist/AmbiorixPay-debug.apk"
 
       - name: Upload APK
