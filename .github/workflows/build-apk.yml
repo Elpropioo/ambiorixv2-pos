@@ -1,3 +1,4 @@
+
 name: Build Ambiorix Pay APK
 
 on:
@@ -10,7 +11,6 @@ permissions:
 
 jobs:
   build:
-    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
@@ -40,10 +40,25 @@ jobs:
           PROJECT_DIR="$(dirname "$FILE")"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          test -f "$PROJECT_DIR/gradlew"
           test -d "$PROJECT_DIR/app"
+          test -f "$PROJECT_DIR/app/build.gradle.kts" -o \
+               -f "$PROJECT_DIR/app/build.gradle"
 
           echo "Proyecto encontrado: $PROJECT_DIR"
+
+      - name: Install Gradle 8.9
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fL --retry 3 \
+            https://services.gradle.org/distributions/gradle-8.9-bin.zip \
+            -o /tmp/gradle.zip
+
+          unzip -q /tmp/gradle.zip -d /tmp
+          echo "/tmp/gradle-8.9/bin" >> "$GITHUB_PATH"
+
+          /tmp/gradle-8.9/bin/gradle --version
 
       - name: Configure Android SDK
         shell: bash
@@ -69,37 +84,21 @@ jobs:
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-      - name: Verify Gradle wrapper
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          chmod +x ./gradlew
-
-          echo "Verificando archivos del wrapper..."
-          test -f gradle/wrapper/gradle-wrapper.jar
-          test -f gradle/wrapper/gradle-wrapper.properties
-
-          echo "Versión de Gradle:"
-          ./gradlew --version --no-daemon
-
       - name: Run unit tests
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
-          ./gradlew --no-daemon --stacktrace tasks
-          ./gradlew --no-daemon --stacktrace testDebugUnitTest
+          gradle --no-daemon --stacktrace testDebugUnitTest
 
       - name: Build debug APK
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
-          ./gradlew --no-daemon --stacktrace assembleDebug
+          gradle --no-daemon --stacktrace assembleDebug
 
-      - name: Verify and prepare APK
+      - name: Verify APK
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
@@ -109,13 +108,12 @@ jobs:
             -maxdepth 1 -type f -name '*.apk' -print -quit)"
 
           if [ -z "$APK" ]; then
-            echo "ERROR: No se generó ningún APK."
+            echo "ERROR: Gradle terminó sin generar el APK."
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/dist"
           cp "$APK" "$GITHUB_WORKSPACE/dist/AmbiorixPay-debug.apk"
-
           ls -lh "$GITHUB_WORKSPACE/dist/AmbiorixPay-debug.apk"
 
       - name: Upload APK
