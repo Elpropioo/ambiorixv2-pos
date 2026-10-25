@@ -1,104 +1,114 @@
+
 name: Build Ambiorix Pay APK
 
 on:
   push:
-    branches: ["**"]
-    tags: ["v*"]
+    branches: [main, master]
   pull_request:
   workflow_dispatch:
-    inputs:
-      create_release:
-        description: 'Crear una GitHub Release con el APK'
-        required: false
-        type: boolean
-        default: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
-    name: Build & Test APK
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17 (Temurin)
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
-          cache: 'gradle'
+          distribution: temurin
+          java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK Licenses
+      - name: Locate Android project
+        shell: bash
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          set -euo pipefail
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+          FILE="$(find . -type f \
+            \( -name settings.gradle.kts -o -name settings.gradle \) \
+            -not -path '*/.gradle/*' -print -quit)"
 
-      - name: Run Unit Tests
-        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+          if [ -z "$FILE" ]; then
+            echo "ERROR: No se encontró el archivo settings.gradle."
+            exit 1
+          fi
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+          PROJECT_DIR="$(dirname "$FILE")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Build Release APK
-        run: ./gradlew assembleRelease --no-daemon --stacktrace
+          test -f "$PROJECT_DIR/gradlew"
+          test -d "$PROJECT_DIR/app"
 
-      - name: Rename APKs for clear identification
+          echo "Proyecto Android encontrado: $PROJECT_DIR"
+
+      - name: Configure Android SDK
+        shell: bash
         run: |
-          mkdir -p final-apks
-          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk final-apks/AmbiorixPay-Debug.apk
+          set -euo pipefail
+
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+
+          SDKMANAGER="$(find "$SDK/cmdline-tools" \
+            -type f -name sdkmanager -print -quit)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: Android SDK command-line tools not found."
+            exit 1
           fi
-          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
-            cp app/build/outputs/apk/release/app-release.apk final-apks/AmbiorixPay-Release.apk
+
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+
+      - name: Verify Gradle wrapper
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --version --no-daemon
+
+      - name: Run unit tests
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Verify and prepare APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$(find app/build/outputs/apk/debug \
+            -maxdepth 1 -type f -name '*.apk' -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: No debug APK was generated."
+            exit 1
           fi
-          ls -la final-apks/
 
-      - name: Upload Debug APK Artifact
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp "$APK" "$GITHUB_WORKSPACE/dist/AmbiorixPay-debug.apk"
+          ls -lh "$GITHUB_WORKSPACE/dist/AmbiorixPay-debug.apk"
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AmbiorixPay-Debug-APK
-          path: final-apks/AmbiorixPay-Debug.apk
-          if-no-files-found: warn
-
-      - name: Upload Release APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: AmbiorixPay-Release-APK
-          path: final-apks/AmbiorixPay-Release.apk
-          if-no-files-found: warn
-
-      - name: Upload All APKs
-        uses: actions/upload-artifact@v4
-        with:
-          name: AmbiorixPay-All-APKs
-          path: app/build/outputs/apk/**/*.apk
+          name: AmbiorixPay-debug-APK
+          path: dist/AmbiorixPay-debug.apk
           if-no-files-found: error
-
-      - name: Publish GitHub Release (on tag or manual release)
-        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.create_release == true)
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            final-apks/AmbiorixPay-Debug.apk
-            final-apks/AmbiorixPay-Release.apk
-          name: Ambiorix Pay ${{ github.ref_name }}
-          body: |
-            ## Ambiorix Pay APK
-            Versión compilada automáticamente con soporte para:
-            - Servicio ENCENDIDO / APAGADO
-            - Programación de Horarios Comerciales
-            - Acumulado Diario y Prevención de Duplicados
-            - Importación de Códigos QR (QR 1 y QR 2) desde la galería
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          retention-days: 14
