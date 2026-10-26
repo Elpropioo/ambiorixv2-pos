@@ -301,6 +301,21 @@ class PosRepository(
         return Result.success(ing)
     }
 
+    fun createIngredient(
+        name: String,
+        unit: String,
+        initialStock: Double,
+        unitCostCOP: Long
+    ): Result<Ingredient> {
+        return createIngredient(
+            name = name,
+            unit = unit,
+            initialStock = initialStock,
+            minStockAlert = 100.0,
+            unitCostCOP = unitCostCOP
+        )
+    }
+
     fun updateIngredient(
         id: String,
         name: String,
@@ -2780,6 +2795,5 @@ class PosRepository(
         )
     }
 }
-
 
 

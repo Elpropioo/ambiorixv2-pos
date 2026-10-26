@@ -324,3 +324,305 @@ data class MonthDayIndicator(
     val totalExpenses: Long
 )
 
+// =========================================================================
+// INTER-STORE COORDINATION & NEQUI PAYMENT PROTOCOL MODELS (Sections 15 & 16)
+// =========================================================================
+
+enum class ReservationState {
+    CREATED,
+    PENDING_SEND,
+    SENT,
+    ACKNOWLEDGED,
+    ACTIVE,
+    CANCELLED,
+    REPLACED_BY_CASH,
+    PAYMENT_CANDIDATE,
+    COMPLETED,
+    EXPIRED,
+    REQUIRES_REVIEW
+}
+
+enum class NotificationState {
+    RECEIVED,
+    PARSED,
+    UNASSIGNED,
+    MATCH_CANDIDATE,
+    ASSIGNED,
+    RECONCILIATION_PENDING,
+    LINKED_TO_SALE,
+    DUPLICATE_EVENT,
+    REQUIRES_REVIEW
+}
+
+enum class SyncState {
+    NOT_SENT,
+    PENDING_SEND,
+    SENT,
+    ACKNOWLEDGED,
+    RETRY_PENDING,
+    FAILED_REQUIRES_ATTENTION
+}
+
+data class PaymentReservation(
+    val id: String,                         // e.g. "H-20261026-001" or "RES-1729..."
+    val orderId: String,                    // e.g. "ORD-123"
+    val deviceId: String = "dev-main",      // Device identifier
+    val storeId: String,                    // "HELADERIA" or "PIZZERIA"
+    val amount: Long,                       // Exact integer in COP
+    val createdAt: Long = System.currentTimeMillis(),
+    val state: ReservationState = ReservationState.CREATED,
+    val syncState: SyncState = SyncState.NOT_SENT,
+    val protocolVersion: Int = 1,
+    val notes: String? = null,
+    val cancellationReason: String? = null,
+    val matchedNotificationId: String? = null,
+    val saleId: String? = null,
+    val cartSnapshotJson: String? = null,
+    val retryCount: Int = 0,
+    val lastAttemptTimestamp: Long = 0L
+)
+
+data class NequiBankNotification(
+    val id: String,                         // Stable cryptographic hash / fingerprint
+    val amount: Long,
+    val senderName: String? = null,
+    val bankRef: String? = null,            // null if not present in SMS
+    val channel: String? = null,            // e.g. "Bre-B", "App Nequi"
+    val timestamp: Long = System.currentTimeMillis(),
+    val dateStr: String = "",
+    val timeStr: String = "",
+    val rawBody: String = "",
+    val state: NotificationState = NotificationState.RECEIVED,
+    val assignedStore: String? = null,      // "HELADERIA" or "PIZZERIA"
+    val assignedByCashier: String? = null,
+    val assignedAt: Long? = null,
+    val linkedReservationId: String? = null,
+    val linkedSaleId: String? = null,
+    val syncState: SyncState = SyncState.NOT_SENT,
+    val reviewReason: String? = null
+) {
+    val displayBankRef: String
+        get() = if (bankRef.isNullOrBlank()) "No disponible en el SMS" else bankRef
+}
+
+data class PendingOutboxMessage(
+    val id: String,                         // e.g. "msg-1729..."
+    val command: String,                    // e.g. "RESERVE", "CANCEL", "ASSIGN"
+    val payload: String,
+    val targetPhone: String,
+    val relatedEntityId: String,            // reservationId or notificationId
+    val createdAt: Long = System.currentTimeMillis(),
+    var retryCount: Int = 0,
+    var lastAttemptAt: Long = 0L,
+    var acknowledged: Boolean = false
+)
+
+interface StoreCoordinationTransport {
+    fun sendCommand(payload: String, targetPhone: String): Boolean
+}
+
+object AmbiorixSmsProtocol {
+    const val HEADER = "AMBIPAY"
+    const val VERSION = 1
+
+    const val CMD_RESERVE = "RESERVE"
+    const val CMD_RESERVE_ACK = "RESERVE_ACK"
+    const val CMD_CANCEL = "CANCEL"
+    const val CMD_CANCEL_ACK = "CANCEL_ACK"
+    const val CMD_PAYMENT_CANDIDATE = "PAYMENT_CANDIDATE"
+    const val CMD_COMPLETE = "COMPLETE"
+    const val CMD_COMPLETE_ACK = "COMPLETE_ACK"
+    const val CMD_ASSIGN = "ASSIGN"
+    const val CMD_ASSIGN_ACK = "ASSIGN_ACK"
+    const val CMD_STATUS = "STATUS"
+    const val CMD_STATUS_RESPONSE = "STATUS_RESPONSE"
+    const val CMD_RECONCILE = "RECONCILE"
+    const val CMD_ACK = "ACK"
+
+    data class ParsedCommand(
+        val header: String,
+        val command: String,
+        val version: Int,
+        val fields: Map<String, String>,
+        val rawMessage: String
+    ) {
+        val id: String? get() = fields["id"]
+        val orderId: String? get() = fields["order"]
+        val src: String? get() = fields["src"]
+        val dst: String? get() = fields["dst"]
+        val amount: Long? get() = fields["amount"]?.toLongOrNull()
+        val tx: String? get() = fields["tx"]
+        val ackMsgId: String? get() = fields["ackMsgId"]
+        val reason: String? get() = fields["reason"]
+        val state: String? get() = fields["state"]
+        val timestamp: Long? get() = fields["ts"]?.toLongOrNull()
+        val bankTimestamp: Long? get() = fields["bankts"]?.toLongOrNull()
+        val payer: String? get() = fields["payer"]
+        val bankRef: String? get() = fields["ref"]
+    }
+
+    fun isProtocolMessage(body: String): Boolean {
+        val trimmed = body.trim()
+        return trimmed.startsWith("$HEADER|") || trimmed.startsWith("APOS|")
+    }
+
+    fun parse(rawBody: String): ParsedCommand? {
+        val trimmed = rawBody.trim()
+        if (!isProtocolMessage(trimmed)) return null
+        val parts = trimmed.split("|")
+        if (parts.size < 3) return null
+
+        val header = parts[0]
+        val cmd = parts[1]
+        var version = 1
+        val fields = mutableMapOf<String, String>()
+
+        for (i in 2 until parts.size) {
+            val part = parts[i]
+            val eqIdx = part.indexOf('=')
+            if (eqIdx > 0) {
+                val k = part.substring(0, eqIdx).trim()
+                val v = part.substring(eqIdx + 1).trim()
+                if (k == "v") {
+                    version = v.toIntOrNull() ?: 1
+                } else {
+                    fields[k] = v
+                }
+            } else if (i == 2 && part.startsWith("v")) {
+                version = part.removePrefix("v").toIntOrNull() ?: 1
+            }
+        }
+
+        return ParsedCommand(
+            header = header,
+            command = cmd,
+            version = version,
+            fields = fields,
+            rawMessage = trimmed
+        )
+    }
+
+    fun buildReserve(
+        id: String,
+        orderId: String,
+        src: String,
+        amount: Long,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        return "$HEADER|$CMD_RESERVE|v=$VERSION|id=$id|order=$orderId|src=$src|amount=$amount|currency=COP|ts=$timestamp"
+    }
+
+    fun buildReserveAck(
+        id: String,
+        ackMsgId: String,
+        src: String,
+        dst: String,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        return "$HEADER|$CMD_RESERVE_ACK|v=$VERSION|id=$id|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
+    }
+
+    fun buildCancel(
+        id: String,
+        src: String,
+        amount: Long,
+        reason: String = "USER_CANCEL",
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        return "$HEADER|$CMD_CANCEL|v=$VERSION|id=$id|src=$src|amount=$amount|reason=$reason|ts=$timestamp"
+    }
+
+    fun buildCancelAck(
+        id: String,
+        ackMsgId: String,
+        src: String,
+        dst: String,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        return "$HEADER|$CMD_CANCEL_ACK|v=$VERSION|id=$id|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
+    }
+
+    fun buildPaymentCandidate(
+        id: String,
+        tx: String,
+        src: String,
+        amount: Long,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        return "$HEADER|$CMD_PAYMENT_CANDIDATE|v=$VERSION|id=$id|tx=$tx|src=$src|amount=$amount|ts=$timestamp"
+    }
+
+    fun buildComplete(
+        id: String,
+        saleId: String,
+        src: String,
+        amount: Long,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        return "$HEADER|$CMD_COMPLETE|v=$VERSION|id=$id|sale=$saleId|src=$src|amount=$amount|ts=$timestamp"
+    }
+
+    fun buildCompleteAck(
+        id: String,
+        ackMsgId: String,
+        src: String,
+        dst: String,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        return "$HEADER|$CMD_COMPLETE_ACK|v=$VERSION|id=$id|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
+    }
+
+    fun buildAssign(
+        tx: String,
+        src: String,
+        dst: String,
+        amount: Long,
+        bankts: Long,
+        payer: String? = null,
+        bankRef: String? = null
+    ): String {
+        val base = "$HEADER|$CMD_ASSIGN|v=$VERSION|tx=$tx|src=$src|dst=$dst|amount=$amount|bankts=$bankts"
+        val p = if (!payer.isNullOrBlank()) "|payer=${payer.replace("|", " ")}" else ""
+        val r = if (!bankRef.isNullOrBlank()) "|ref=${bankRef.replace("|", " ")}" else ""
+        return base + p + r
+    }
+
+    fun buildAssignAck(
+        tx: String,
+        ackMsgId: String,
+        src: String,
+        dst: String,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        return "$HEADER|$CMD_ASSIGN_ACK|v=$VERSION|tx=$tx|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
+    }
+
+    fun buildStatus(
+        id: String,
+        src: String,
+        dst: String,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        return "$HEADER|$CMD_STATUS|v=$VERSION|id=$id|src=$src|dst=$dst|ts=$timestamp"
+    }
+
+    fun buildStatusResponse(
+        id: String,
+        state: String,
+        src: String,
+        dst: String,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        return "$HEADER|$CMD_STATUS_RESPONSE|v=$VERSION|id=$id|state=$state|src=$src|dst=$dst|ts=$timestamp"
+    }
+
+    fun buildAck(
+        ackMsgId: String,
+        src: String,
+        dst: String,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        return "$HEADER|$CMD_ACK|v=$VERSION|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
+    }
+}
+
