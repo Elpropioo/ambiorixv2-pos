@@ -117,22 +117,77 @@ class PosRepository(
     private var configuredPeerEnabled: Boolean = true
 
     // Pluggable Transport Layer (Section 21: Habla y Escucha)
-    var coordinationTransport: StoreCoordinationTransport = object : StoreCoordinationTransport {
+    private val defaultAndroidTransport = object : StoreCoordinationTransport {
         override fun sendCommand(payload: String, targetPhone: String): Boolean {
-            if (targetPhone.isBlank()) return false
+            val cleanPhone = targetPhone.trim().replace(Regex("[^0-9+]"), "")
+            if (cleanPhone.isBlank() || cleanPhone == "3000000000") return false
+            val ctx = context ?: return false
+            if (androidx.core.content.ContextCompat.checkSelfPermission(
+                    ctx,
+                    android.Manifest.permission.SEND_SMS
+                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                return false
+            }
             return try {
-                if (context != null) {
-                    val smsManager: SmsManager = context.getSystemService(SmsManager::class.java)
-                        ?: SmsManager.getDefault()
-                    smsManager.sendTextMessage(targetPhone, null, payload, null, null)
-                    true
-                } else {
-                    false
+                val smsManager: SmsManager = ctx.getSystemService(SmsManager::class.java)
+                    ?: @Suppress("DEPRECATION") SmsManager.getDefault()
+                val parsed = AmbiorixSmsProtocol.parse(payload)
+                val msgId = parsed?.msgId ?: "msg-${System.currentTimeMillis()}"
+                val entityId = parsed?.id ?: parsed?.tx ?: ""
+                val sentIntent = android.content.Intent(ACTION_SMS_SENT).apply {
+                    setPackage(ctx.packageName)
+                    putExtra(EXTRA_MSG_ID, msgId)
+                    putExtra(EXTRA_ENTITY_ID, entityId)
                 }
+                val flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                    (if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) android.app.PendingIntent.FLAG_IMMUTABLE else 0)
+                val reqCodeBase = (msgId.hashCode() and 0x3FFFFFFF)
+                val parts = smsManager.divideMessage(payload)
+                if (parts != null && parts.size > 1) {
+                    val sentIntents = ArrayList<android.app.PendingIntent>(parts.size)
+                    for (i in parts.indices) {
+                        if (i == parts.lastIndex) {
+                            sentIntents.add(
+                                android.app.PendingIntent.getBroadcast(
+                                    ctx,
+                                    reqCodeBase + i,
+                                    sentIntent,
+                                    flags
+                                )
+                            )
+                        } else {
+                            sentIntents.add(
+                                android.app.PendingIntent.getBroadcast(
+                                    ctx,
+                                    reqCodeBase + i,
+                                    android.content.Intent(ACTION_SMS_PART_SENT).setPackage(ctx.packageName),
+                                    flags
+                                )
+                            )
+                        }
+                    }
+                    smsManager.sendMultipartTextMessage(cleanPhone, null, parts, sentIntents, null)
+                } else {
+                    val pi = android.app.PendingIntent.getBroadcast(
+                        ctx,
+                        reqCodeBase,
+                        sentIntent,
+                        flags
+                    )
+                    smsManager.sendTextMessage(cleanPhone, null, payload, pi, null)
+                }
+                true
             } catch (e: Exception) {
                 false
             }
         }
+    }
+
+    var coordinationTransport: StoreCoordinationTransport = defaultAndroidTransport
+
+    private fun isAsyncAndroidTransport(): Boolean {
+        return context != null && coordinationTransport === defaultAndroidTransport
     }
 
     // Current Cash Shift
@@ -166,6 +221,34 @@ class PosRepository(
 
     init {
         loadData()
+        registerSmsSentReceiverIfNeeded()
+    }
+
+    private fun registerSmsSentReceiverIfNeeded() {
+        val ctx = context?.applicationContext ?: return
+        try {
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context?, intent: android.content.Intent?) {
+                    if (intent?.action != ACTION_SMS_SENT) return
+                    val msgId = intent.getStringExtra(EXTRA_MSG_ID).orEmpty()
+                    val entityId = intent.getStringExtra(EXTRA_ENTITY_ID).orEmpty()
+                    val isSuccess = (resultCode == android.app.Activity.RESULT_OK)
+                    onSmsSendResult(
+                        msgId = msgId,
+                        relatedEntityId = entityId,
+                        isSuccess = isSuccess,
+                        errorCode = resultCode
+                    )
+                }
+            }
+            androidx.core.content.ContextCompat.registerReceiver(
+                ctx,
+                receiver,
+                android.content.IntentFilter(ACTION_SMS_SENT),
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+        } catch (_: Exception) {
+        }
     }
 
     // =========================================================================
@@ -1775,20 +1858,30 @@ class PosRepository(
     }
 
     fun getLocalStoreId(): String {
-        val fromSettings = settingsRepo?.getSettings()?.localStoreId
-        return if (!fromSettings.isNullOrBlank() && fromSettings != "STORE_01") {
-            fromSettings.uppercase()
-        } else {
-            configuredLocalStoreId
+        val settings = settingsRepo?.getSettings()
+        val fromSettings = settings?.localStoreId
+        if (!fromSettings.isNullOrBlank() && fromSettings != "STORE_01") {
+            return fromSettings.trim().uppercase()
+        }
+        val peerName = settings?.peerStoreName?.uppercase() ?: ""
+        val localName = "${settings?.businessName.orEmpty()} ${settings?.localStoreName.orEmpty()}".uppercase()
+        return when {
+            localName.contains("PIZZ") || peerName.contains("HELAD") -> "PIZZERIA"
+            localName.contains("HELAD") || peerName.contains("PIZZ") -> "HELADERIA"
+            else -> configuredLocalStoreId
         }
     }
 
     fun getPeerStoreId(): String {
-        val fromSettings = settingsRepo?.getSettings()?.peerStoreId
-        return if (!fromSettings.isNullOrBlank() && fromSettings != "STORE_02") {
-            fromSettings.uppercase()
+        val settings = settingsRepo?.getSettings()
+        val fromSettings = settings?.peerStoreId
+        if (!fromSettings.isNullOrBlank() && fromSettings != "STORE_02") {
+            return fromSettings.trim().uppercase()
+        }
+        return if (getLocalStoreId().equals("PIZZERIA", ignoreCase = true)) {
+            "HELADERIA"
         } else {
-            configuredPeerStoreId
+            "PIZZERIA"
         }
     }
 
@@ -1868,8 +1961,9 @@ class PosRepository(
         val currentRes = _reservations.value.find { it.id == finalResId } ?: initialRes
         val updatedSyncState = when {
             currentRes.syncState == SyncState.ACKNOWLEDGED -> SyncState.ACKNOWLEDGED
-            sent -> SyncState.SENT
-            else -> SyncState.RETRY_PENDING
+            !sent -> SyncState.RETRY_PENDING
+            isAsyncAndroidTransport() -> SyncState.PENDING_SEND
+            else -> SyncState.SENT
         }
         val updatedRes = currentRes.copy(
             syncState = updatedSyncState,
@@ -1964,8 +2058,9 @@ class PosRepository(
         val finalRes = currentAfterCancel.copy(
             syncState = when {
                 currentAfterCancel.syncState == SyncState.ACKNOWLEDGED -> SyncState.ACKNOWLEDGED
-                sent -> SyncState.SENT
-                else -> SyncState.RETRY_PENDING
+                !sent -> SyncState.RETRY_PENDING
+                isAsyncAndroidTransport() -> SyncState.PENDING_SEND
+                else -> SyncState.SENT
             },
             lastAttemptTimestamp = now
         )
@@ -2022,8 +2117,9 @@ class PosRepository(
         val finalRes = currentAfterSwitch.copy(
             syncState = when {
                 currentAfterSwitch.syncState == SyncState.ACKNOWLEDGED -> SyncState.ACKNOWLEDGED
-                sent -> SyncState.SENT
-                else -> SyncState.RETRY_PENDING
+                !sent -> SyncState.RETRY_PENDING
+                isAsyncAndroidTransport() -> SyncState.PENDING_SEND
+                else -> SyncState.SENT
             },
             lastAttemptTimestamp = now
         )
@@ -2077,15 +2173,16 @@ class PosRepository(
                 val sent = coordinationTransport.sendCommand(msg.payload, msg.targetPhone)
                 if (sent) {
                     successCount++
-                    // Update related reservation or notification syncState from RETRY_PENDING to SENT
+                    val targetSyncState = if (isAsyncAndroidTransport()) SyncState.PENDING_SEND else SyncState.SENT
+                    // Update related reservation or notification syncState
                     _reservations.value.find { it.id == msg.relatedEntityId }?.let { r ->
                         if (r.syncState == SyncState.RETRY_PENDING || r.syncState == SyncState.PENDING_SEND || r.syncState == SyncState.NOT_SENT) {
-                            updateReservationInList(r.copy(syncState = SyncState.SENT, lastAttemptTimestamp = now, retryCount = msg.retryCount + 1))
+                            updateReservationInList(r.copy(syncState = targetSyncState, lastAttemptTimestamp = now, retryCount = msg.retryCount + 1))
                         }
                     }
                     _bankNotifications.value.find { it.id == msg.relatedEntityId }?.let { n ->
                         if (n.syncState == SyncState.RETRY_PENDING || n.syncState == SyncState.PENDING_SEND || n.syncState == SyncState.NOT_SENT) {
-                            updateBankNotificationInList(n.copy(syncState = SyncState.SENT))
+                            updateBankNotificationInList(n.copy(syncState = targetSyncState))
                         }
                     }
                     msg.copy(retryCount = msg.retryCount + 1, lastAttemptAt = now)
@@ -2100,12 +2197,63 @@ class PosRepository(
     }
 
     @Synchronized
+    fun onSmsSendResult(msgId: String, relatedEntityId: String, isSuccess: Boolean, errorCode: Int = 0) {
+        val now = System.currentTimeMillis()
+        if (isSuccess) {
+            _reservations.value.find { it.id == relatedEntityId }?.let { r ->
+                if (r.syncState != SyncState.ACKNOWLEDGED) {
+                    updateReservationInList(r.copy(syncState = SyncState.SENT, lastAttemptTimestamp = now))
+                }
+            }
+            _bankNotifications.value.find { it.id == relatedEntityId }?.let { n ->
+                if (n.syncState != SyncState.ACKNOWLEDGED) {
+                    updateBankNotificationInList(n.copy(syncState = SyncState.SENT))
+                }
+            }
+        } else {
+            _outboxMessages.value = _outboxMessages.value.map { m ->
+                if (m.id == msgId || (msgId.isEmpty() && m.relatedEntityId == relatedEntityId && !m.acknowledged)) {
+                    m.copy(retryCount = m.retryCount + 1, lastAttemptAt = now)
+                } else m
+            }
+            saveOutboxMessages()
+            _reservations.value.find { it.id == relatedEntityId }?.let { r ->
+                if (r.syncState != SyncState.ACKNOWLEDGED) {
+                    updateReservationInList(r.copy(syncState = SyncState.RETRY_PENDING, lastAttemptTimestamp = now, retryCount = r.retryCount + 1))
+                }
+            }
+            _bankNotifications.value.find { it.id == relatedEntityId }?.let { n ->
+                if (n.syncState != SyncState.ACKNOWLEDGED) {
+                    updateBankNotificationInList(n.copy(syncState = SyncState.RETRY_PENDING))
+                }
+            }
+        }
+    }
+
+    @Synchronized
     fun processIncomingCoordinationSms(rawBody: String, senderPhone: String = getPeerPhone()): Boolean {
         val parsed = AmbiorixSmsProtocol.parse(rawBody) ?: return false
 
+        // Remember peer phone if received from a real cellular number and not yet configured
+        if (senderPhone.isNotBlank() && getPeerPhone().isBlank()) {
+            configuredPeerPhone = senderPhone.trim()
+            storage.putString(KEY_PEER_PHONE, configuredPeerPhone)
+        }
+
         // Validate origin store is not self
         if (parsed.src != null && parsed.src.equals(getLocalStoreId(), ignoreCase = true) && !AmbiorixSmsProtocol.isAckOrResponseCommand(parsed.command)) {
-            return false
+            val isOwnLocalEntity = (parsed.id != null && _reservations.value.any { it.id == parsed.id && it.deviceId.startsWith("dev-") }) ||
+                (parsed.tx != null && _outboxMessages.value.any { it.relatedEntityId == parsed.tx })
+            if (isOwnLocalEntity || context == null) {
+                return false
+            }
+            // On a real Android device, if a remote peer SMS arrives with src == default localStoreId (because localStoreId wasn't customized),
+            // automatically adopt the opposite store identity (PIZZERIA <-> HELADERIA) so the coordination SMS and ACK work seamlessly.
+            val oppositeStore = if (parsed.src.equals("HELADERIA", ignoreCase = true)) "PIZZERIA" else "HELADERIA"
+            configuredLocalStoreId = oppositeStore
+            configuredPeerStoreId = parsed.src.uppercase()
+            storage.putString(KEY_LOCAL_STORE_ID, configuredLocalStoreId)
+            storage.putString(KEY_PEER_STORE_ID, configuredPeerStoreId)
         }
 
         val incomingMsgId = parsed.msgId ?: "${parsed.command}-${parsed.id ?: parsed.tx ?: parsed.timestamp}"
@@ -2390,7 +2538,8 @@ class PosRepository(
             AmbiorixSmsProtocol.CMD_ASSIGN -> AmbiorixSmsProtocol.buildAssignAck(parsed.tx ?: "", ackMsgId, src, dst)
             else -> AmbiorixSmsProtocol.buildAck(ackMsgId, src, dst)
         }
-        coordinationTransport.sendCommand(payload, targetPhone)
+        val replyTarget = targetPhone.ifBlank { getPeerPhone() }
+        coordinationTransport.sendCommand(payload, replyTarget)
     }
 
     private fun enqueueAndDispatchOutbox(
@@ -2555,7 +2704,7 @@ class PosRepository(
         if (matchingActive.size == 1) {
             val candidate = matchingActive.first()
 
-            if (candidate.storeId.equals(getLocalStoreId(), ignoreCase = true)) {
+            if (candidate.deviceId.startsWith("dev-") || candidate.storeId.equals(getLocalStoreId(), ignoreCase = true)) {
                 // Belongs to THIS store -> confirm sale atomically & idempotently once
                 val deterministicSaleId = "sale-${candidate.id}"
                 val items = recoverReservationCart(candidate.id)
@@ -2859,8 +3008,9 @@ class PosRepository(
         val updated = currentNotif.copy(
             syncState = when {
                 currentNotif.syncState == SyncState.ACKNOWLEDGED -> SyncState.ACKNOWLEDGED
-                sent -> SyncState.SENT
-                else -> SyncState.RETRY_PENDING
+                !sent -> SyncState.RETRY_PENDING
+                isAsyncAndroidTransport() -> SyncState.PENDING_SEND
+                else -> SyncState.SENT
             }
         )
         updateBankNotificationInList(updated)
@@ -2928,8 +3078,9 @@ class PosRepository(
         val updated = currentNotif.copy(
             syncState = when {
                 currentNotif.syncState == SyncState.ACKNOWLEDGED -> SyncState.ACKNOWLEDGED
-                sent -> SyncState.SENT
-                else -> SyncState.RETRY_PENDING
+                !sent -> SyncState.RETRY_PENDING
+                isAsyncAndroidTransport() -> SyncState.PENDING_SEND
+                else -> SyncState.SENT
             }
         )
         updateBankNotificationInList(updated)
@@ -3816,6 +3967,11 @@ class PosRepository(
         const val KEY_LOCAL_STORE_ID = "pos_local_store_id"
         const val KEY_PEER_STORE_ID = "pos_peer_store_id"
         const val KEY_PEER_PHONE = "pos_peer_phone"
+
+        const val ACTION_SMS_SENT = "com.ambiorix.pay.ACTION_SMS_SENT"
+        const val ACTION_SMS_PART_SENT = "com.ambiorix.pay.ACTION_SMS_PART_SENT"
+        const val EXTRA_MSG_ID = "extra_msg_id"
+        const val EXTRA_ENTITY_ID = "extra_entity_id"
 
         @Volatile
         private var INSTANCE: PosRepository? = null

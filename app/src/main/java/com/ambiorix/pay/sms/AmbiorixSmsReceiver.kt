@@ -21,23 +21,44 @@ class AmbiorixSmsReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context?, intent: Intent?) {
         if (context == null || intent == null) return
-        if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
-
         val appContext = context.applicationContext
-        val settings = SettingsRepository.getInstance(appContext).getSettings()
-        if (!settings.isServiceEnabled || !settings.smsPaymentEnabled) return
+        val posRepository = PosRepository.getInstance(appContext)
+
+        if (intent.action == PosRepository.ACTION_SMS_SENT) {
+            val msgId = intent.getStringExtra(PosRepository.EXTRA_MSG_ID).orEmpty()
+            val entityId = intent.getStringExtra(PosRepository.EXTRA_ENTITY_ID).orEmpty()
+            val isSuccess = (resultCode == android.app.Activity.RESULT_OK)
+            posRepository.onSmsSendResult(
+                msgId = msgId,
+                relatedEntityId = entityId,
+                isSuccess = isSuccess,
+                errorCode = resultCode
+            )
+            return
+        }
+
+        if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
 
         val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
         if (messages.isNullOrEmpty()) return
 
-        val sender = messages.firstOrNull()?.originatingAddress
+        val sender = messages.firstOrNull()?.originatingAddress?.trim()
         val fullBody = messages.joinToString(separator = "") { it.messageBody.orEmpty() }.trim()
         if (fullBody.isEmpty()) return
 
-        val posRepository = PosRepository.getInstance(appContext)
+        // Si es un mensaje de coordinación entre tiendas AMBIPAY|..., procesarlo directamente con el número real del remitente
+        if (com.ambiorix.pay.pos.AmbiorixSmsProtocol.isProtocolMessage(fullBody)) {
+            val replyPhone = sender?.takeIf { it.isNotBlank() } ?: posRepository.getPeerPhone()
+            posRepository.processIncomingCoordinationSms(fullBody, replyPhone)
+            return
+        }
+
+        val settings = SettingsRepository.getInstance(appContext).getSettings()
+        if (!settings.isServiceEnabled || !settings.smsPaymentEnabled) return
+
         val ts = messages.firstOrNull()?.timestampMillis ?: System.currentTimeMillis()
 
-        // Procesar comando interno AMBIPAY o notificación bancaria Nequi
+        // Procesar notificación bancaria Nequi
         val bankNotif = posRepository.processNequiBankSms(
             rawBody = fullBody,
             originatingAddress = sender,

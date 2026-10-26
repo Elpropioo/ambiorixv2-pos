@@ -68,7 +68,12 @@ class SettingsActivity : ComponentActivity() {
                         ttsStatusDetail = ttsStatusDetail,
                         isNotificationAccessGranted = isNotificationAccessGranted,
                         onSettingsChanged = { transform ->
+                            val prev = settingsRepository.getSettings()
                             settingsRepository.updateSettings(transform)
+                            val next = settingsRepository.getSettings()
+                            if ((!prev.peerStoreEnabled && next.peerStoreEnabled) || (!prev.smsPaymentEnabled && next.smsPaymentEnabled)) {
+                                ensureSmsPermissionsGranted()
+                            }
                         },
                         onBackClick = { finish() },
                         onOpenNotificationSettings = {
@@ -95,6 +100,24 @@ class SettingsActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    private fun ensureSmsPermissionsGranted() {
+        val requiredPermissions = arrayOf(
+            android.Manifest.permission.RECEIVE_SMS,
+            android.Manifest.permission.SEND_SMS
+        )
+        val missing = requiredPermissions.filter {
+            androidx.core.content.ContextCompat.checkSelfPermission(this, it) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            androidx.core.app.ActivityCompat.requestPermissions(
+                this,
+                missing.toTypedArray(),
+                1002
+            )
         }
     }
 

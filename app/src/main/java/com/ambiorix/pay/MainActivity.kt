@@ -45,6 +45,7 @@ class MainActivity : ComponentActivity() {
 
         configureKioskWindowFlags()
         lockBackButton()
+        ensureSmsPermissionsGranted()
 
         setContent {
             AmbiorixPayTheme {
@@ -304,6 +305,24 @@ class MainActivity : ComponentActivity() {
                 }
             }
         )
+    }
+
+    private fun ensureSmsPermissionsGranted() {
+        val requiredPermissions = arrayOf(
+            android.Manifest.permission.RECEIVE_SMS,
+            android.Manifest.permission.SEND_SMS
+        )
+        val missing = requiredPermissions.filter {
+            androidx.core.content.ContextCompat.checkSelfPermission(this, it) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            androidx.core.app.ActivityCompat.requestPermissions(
+                this,
+                missing.toTypedArray(),
+                1001
+            )
+        }
     }
 
     private fun checkNotificationAccess(): Boolean {

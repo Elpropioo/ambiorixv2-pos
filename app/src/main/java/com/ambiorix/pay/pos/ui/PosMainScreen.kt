@@ -2242,6 +2242,7 @@ fun PosMainScreen(
                                         when (activeReservation.syncState) {
                                             SyncState.ACKNOWLEDGED -> "Sincronizada (ACK recibido)"
                                             SyncState.SENT -> "SMS enviado (esperando ACK)"
+                                            SyncState.PENDING_SEND -> "Enviando SMS (confirmando con operador)..."
                                             SyncState.RETRY_PENDING -> "Sincronización pendiente (reintentando SMS)"
                                             else -> activeReservation.syncState.name
                                         }
