@@ -54,7 +54,9 @@ import {
   KeyRound,
   ArrowUpRight,
   ArrowDownLeft,
-  CheckCheck
+  CheckCheck,
+  Calendar,
+  ChevronLeft
 } from 'lucide-react';
 import { triggerClientSideZipDownload } from './downloadHelper';
 
@@ -257,6 +259,40 @@ export interface ToppingOption {
   gramsRequired?: number;
 }
 
+export interface RecipeItem {
+  ingredientId: string;
+  ingredientName: string;
+  quantity: number;
+  unit: string;
+}
+
+export interface ComboItem {
+  productId: string;
+  productName: string;
+  quantity: number;
+}
+
+export const UnitConverter = {
+  getConversionFactor(fromUnit: string, toUnit: string): number | null {
+    const from = fromUnit.trim().toLowerCase();
+    const to = toUnit.trim().toLowerCase();
+    if (from === to) return 1.0;
+    if (from === 'g' && to === 'kg') return 0.001;
+    if (from === 'kg' && to === 'g') return 1000.0;
+    if (from === 'ml' && (to === 'l' || to === 'litro' || to === 'litros')) return 0.001;
+    if ((from === 'l' || from === 'litro' || from === 'litros') && to === 'ml') return 1000.0;
+    const isFromU = from === 'unidades' || from === 'un' || from === 'u' || from === 'unidad';
+    const isToU = to === 'unidades' || to === 'un' || to === 'u' || to === 'unidad';
+    if (isFromU && isToU) return 1.0;
+    return null;
+  },
+  convert(qty: number, fromUnit: string, toUnit: string): number {
+    const factor = this.getConversionFactor(fromUnit, toUnit);
+    if (factor === null) throw new Error(`Unidades incompatibles: ${fromUnit} a ${toUnit}`);
+    return qty * factor;
+  }
+};
+
 export interface Product {
   id: string;
   categoryId: string;
@@ -268,20 +304,50 @@ export interface Product {
   badge?: string;
   variants: ProductVariant[];
   allowedToppings?: boolean;
-  baseIngredientId: string;
+  baseIngredientId?: string;
+  imagePath?: string | null;
+  stockQuantity: number;
+  minStockAlert: number;
+  unit: string;
+  isActive: boolean;
+  isCombo?: boolean;
+  recipe?: RecipeItem[];
+  comboItems?: ComboItem[];
+  allowNegativeStock?: boolean;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface CashierProfile {
+  id: string;
+  name: string;
+  isActive: boolean;
+}
+
+export interface InventoryMovement {
+  id: string;
+  productId: string;
+  productName: string;
+  previousStock: number;
+  change: number;
+  resultingStock: number;
+  type: string;
+  reason: string;
+  dateFormatted: string;
+  userName: string;
 }
 
 export interface CartItem {
   cartItemId: string;
   productId: string;
   productName: string;
-  variantId: string;
-  variantName: string;
+  variantId?: string;
+  variantName?: string;
   basePrice: number;
-  variantPriceDelta: number;
+  variantPriceDelta?: number;
   unitPrice: number;
   quantity: number;
-  toppings: ToppingOption[];
+  toppings?: ToppingOption[];
   totalPrice: number;
   estimatedCost: number;
 }
@@ -381,14 +447,20 @@ const INITIAL_INGREDIENTS: Ingredient[] = [
   { id: 'ing-10', name: 'Crema Chantilly Batida', category: 'Toppings', unit: 'ml', currentStock: 800, minStockAlert: 200, unitCostCOP: 30, batchCode: 'LOT-CHAN-08', expiryDate: '2026-11-05' }
 ];
 
-// Initial Catalog Categories & Products
-const CATEGORIES = [
-  { id: 'todos', name: '🍦 Todos', icon: Sparkles },
-  { id: 'helados', name: '🍨 Helados', icon: Coffee },
-  { id: 'gourmet', name: '✨ Gourmet', icon: Sparkles },
-  { id: 'paletas', name: '🍧 Paletas', icon: Boxes },
-  { id: 'copas', name: '🧇 Copas', icon: Layers },
-  { id: 'bebidas', name: '🥤 Bebidas', icon: Radio }
+export interface CategoryItem {
+  id: string;
+  name: string;
+  emoji: string;
+  isActive: boolean;
+  displayOrder: number;
+}
+
+const DEFAULT_CATEGORIES: CategoryItem[] = [
+  { id: 'helados', name: 'Helados', emoji: '🍨', isActive: true, displayOrder: 0 },
+  { id: 'gourmet', name: 'Gourmet', emoji: '✨', isActive: true, displayOrder: 1 },
+  { id: 'paletas', name: 'Paletas', emoji: '🍧', isActive: true, displayOrder: 2 },
+  { id: 'copas', name: 'Copas', emoji: '🧇', isActive: true, displayOrder: 3 },
+  { id: 'bebidas', name: 'Bebidas', emoji: '🥤', isActive: true, displayOrder: 4 }
 ];
 
 const AVAILABLE_TOPPINGS: ToppingOption[] = [
@@ -400,7 +472,7 @@ const AVAILABLE_TOPPINGS: ToppingOption[] = [
   { id: 'top-6', name: 'Barquillo Pirulito Crujiente', price: 1000, gramsRequired: 1 }
 ];
 
-const PRODUCTS: Product[] = [
+const DEFAULT_PRODUCTS: Product[] = [
   {
     id: 'prod-1',
     categoryId: 'helados',
@@ -411,6 +483,11 @@ const PRODUCTS: Product[] = [
     emoji: '🍦',
     badge: 'Top',
     baseIngredientId: 'ing-1',
+    stockQuantity: 45,
+    minStockAlert: 10,
+    unit: 'unidades',
+    isActive: true,
+    imagePath: null,
     allowedToppings: true,
     variants: [
       { id: 'var-1', name: '1 Bola (80g)', priceDelta: 0, weightGrams: 80, coneUnits: 1 },
@@ -429,6 +506,11 @@ const PRODUCTS: Product[] = [
     emoji: '🍫',
     badge: 'Top',
     baseIngredientId: 'ing-2',
+    stockQuantity: 38,
+    minStockAlert: 10,
+    unit: 'unidades',
+    isActive: true,
+    imagePath: null,
     allowedToppings: true,
     variants: [
       { id: 'var-1', name: '1 Bola (80g)', priceDelta: 0, weightGrams: 80, coneUnits: 1 },
@@ -446,6 +528,11 @@ const PRODUCTS: Product[] = [
     baseCost: 1900,
     emoji: '🍮',
     baseIngredientId: 'ing-3',
+    stockQuantity: 22,
+    minStockAlert: 8,
+    unit: 'unidades',
+    isActive: true,
+    imagePath: null,
     allowedToppings: true,
     variants: [
       { id: 'var-1', name: '1 Bola (80g)', priceDelta: 0, weightGrams: 80, coneUnits: 1 },
@@ -462,6 +549,11 @@ const PRODUCTS: Product[] = [
     baseCost: 1850,
     emoji: '🍓',
     baseIngredientId: 'ing-4',
+    stockQuantity: 18,
+    minStockAlert: 8,
+    unit: 'unidades',
+    isActive: true,
+    imagePath: null,
     allowedToppings: true,
     variants: [
       { id: 'var-1', name: '1 Bola (80g)', priceDelta: 0, weightGrams: 80, coneUnits: 1 },
@@ -479,6 +571,11 @@ const PRODUCTS: Product[] = [
     emoji: '🌰',
     badge: 'Gourmet',
     baseIngredientId: 'ing-5',
+    stockQuantity: 14,
+    minStockAlert: 5,
+    unit: 'unidades',
+    isActive: true,
+    imagePath: null,
     allowedToppings: true,
     variants: [
       { id: 'var-1', name: '1 Bola (80g)', priceDelta: 0, weightGrams: 80, coneUnits: 1 },
@@ -494,6 +591,11 @@ const PRODUCTS: Product[] = [
     baseCost: 1600,
     emoji: '🍭',
     baseIngredientId: 'ing-4',
+    stockQuantity: 30,
+    minStockAlert: 10,
+    unit: 'unidades',
+    isActive: true,
+    imagePath: null,
     allowedToppings: false,
     variants: [
       { id: 'var-1', name: 'Paleta Unitaria', priceDelta: 0, weightGrams: 100 }
@@ -509,7 +611,17 @@ const PRODUCTS: Product[] = [
     emoji: '🍌',
     badge: 'Clásica',
     baseIngredientId: 'ing-1',
+    stockQuantity: 12,
+    minStockAlert: 4,
+    unit: 'unidades',
+    isActive: true,
+    imagePath: null,
     allowedToppings: true,
+    recipe: [
+      { ingredientId: 'ing-1', ingredientName: 'Base Helado Vainilla Francesa', quantity: 240, unit: 'g' },
+      { ingredientId: 'ing-9', ingredientName: 'Salsa Arequipe Tradicional', quantity: 30, unit: 'g' },
+      { ingredientId: 'ing-10', ingredientName: 'Crema Chantilly Batida', quantity: 40, unit: 'ml' }
+    ],
     variants: [
       { id: 'var-1', name: 'Copa Completa', priceDelta: 0, weightGrams: 240, cupUnits: 1 }
     ]
@@ -523,9 +635,37 @@ const PRODUCTS: Product[] = [
     baseCost: 3800,
     emoji: '🥤',
     baseIngredientId: 'ing-2',
+    stockQuantity: 20,
+    minStockAlert: 5,
+    unit: 'unidades',
+    isActive: true,
+    imagePath: null,
     allowedToppings: true,
     variants: [
       { id: 'var-1', name: 'Vaso 16oz', priceDelta: 0, weightGrams: 200, cupUnits: 1 }
+    ]
+  },
+  {
+    id: 'prod-combo-1',
+    categoryId: 'helados',
+    name: 'Combo Pareja Dulce',
+    description: '1 Banana Split Clásica + 1 Malteada Espesa a precio especial.',
+    basePrice: 28000,
+    baseCost: 9300,
+    emoji: '🎁',
+    badge: 'Combo',
+    isCombo: true,
+    comboItems: [
+      { productId: 'prod-7', productName: 'Banana Split Clásica', quantity: 1 },
+      { productId: 'prod-8', productName: 'Malteada Espesa', quantity: 1 }
+    ],
+    stockQuantity: 10,
+    minStockAlert: 2,
+    unit: 'unidades',
+    isActive: true,
+    imagePath: null,
+    variants: [
+      { id: 'var-1', name: 'Combo Completo', priceDelta: 0 }
     ]
   }
 ];
@@ -583,9 +723,9 @@ export default function App() {
   });
   const [localStoreName, setLocalStoreName] = useState<string>(() => {
     try {
-      return localStorage.getItem('ambiorix_local_name') || 'Heladería Ambiorix';
+      return localStorage.getItem('ambiorix_local_name') || 'Salon de Onces';
     } catch {
-      return 'Heladería Ambiorix';
+      return 'Salon de Onces';
     }
   });
   const [peerSharedSecret, setPeerSharedSecret] = useState<string>(() => {
@@ -636,7 +776,7 @@ export default function App() {
   const [isSpeaking, setIsSpeaking] = useState(false);
 
   // Business info & QR Images
-  const [businessName, setBusinessName] = useState('Heladería Ambiorix');
+  const [businessName, setBusinessName] = useState('Salon de Onces');
   const [phoneText, setPhoneText] = useState('310 987 6543');
   const [qr1Image, setQr1Image] = useState<string | null>(() => {
     try {
@@ -645,6 +785,117 @@ export default function App() {
       return null;
     }
   });
+
+  // Products Catalog (Offline Persistent)
+  const [products, setProducts] = useState<Product[]>(() => {
+    try {
+      const saved = localStorage.getItem('ambiorix_products');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to load products from storage', e);
+    }
+    return DEFAULT_PRODUCTS;
+  });
+
+  // Categories Catalog (Offline Persistent)
+  const [categories, setCategories] = useState<CategoryItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('ambiorix_categories');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to load categories from storage', e);
+    }
+    return DEFAULT_CATEGORIES;
+  });
+
+  // Cashiers Profiles & Active Cashier (Offline Persistent)
+  const [cashiers, setCashiers] = useState<CashierProfile[]>(() => {
+    try {
+      const saved = localStorage.getItem('ambiorix_cashiers');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to load cashiers', e);
+    }
+    return [
+      { id: 'c-1', name: 'Laura Gómez', isActive: true },
+      { id: 'c-2', name: 'Camila Restrepo', isActive: true },
+      { id: 'c-3', name: 'Valentina Ortiz', isActive: true }
+    ];
+  });
+
+  const [activeCashier, setActiveCashier] = useState<CashierProfile>(() => {
+    try {
+      const saved = localStorage.getItem('ambiorix_active_cashier');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to load active cashier', e);
+    }
+    return { id: 'c-1', name: 'Laura Gómez', isActive: true };
+  });
+
+  // Inventory Audit Movements Log (Offline Persistent)
+  const [inventoryMovements, setInventoryMovements] = useState<InventoryMovement[]>(() => {
+    try {
+      const saved = localStorage.getItem('ambiorix_movements');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to load movements', e);
+    }
+    return [
+      {
+        id: 'mov-init-1',
+        productId: 'prod-1',
+        productName: 'Vainilla Francesa',
+        previousStock: 0,
+        change: 45,
+        resultingStock: 45,
+        type: 'PURCHASE',
+        reason: 'Inventario inicial del sistema',
+        dateFormatted: 'Hoy 08:30 AM',
+        userName: 'Laura Gómez'
+      }
+    ];
+  });
+
+  // Admin Modals
+  const [showCashierModal, setShowCashierModal] = useState(false);
+  const [showProductAdminModal, setShowProductAdminModal] = useState(false);
+  const [showCategoryAdminModal, setShowCategoryAdminModal] = useState(false);
+  const [showStockAdminModal, setShowStockAdminModal] = useState(false);
+
+  // Sync to LocalStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('ambiorix_products', JSON.stringify(products));
+    } catch (e) {
+      console.warn('Storage save products error', e);
+    }
+  }, [products]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('ambiorix_categories', JSON.stringify(categories));
+    } catch (e) {
+      console.warn('Storage save categories error', e);
+    }
+  }, [categories]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('ambiorix_cashiers', JSON.stringify(cashiers));
+      localStorage.setItem('ambiorix_active_cashier', JSON.stringify(activeCashier));
+    } catch (e) {
+      console.warn('Storage save cashier error', e);
+    }
+  }, [cashiers, activeCashier]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('ambiorix_movements', JSON.stringify(inventoryMovements.slice(0, 100)));
+    } catch (e) {
+      console.warn('Storage save movements error', e);
+    }
+  }, [inventoryMovements]);
 
   // Ice Cream POS Cart State
   const [selectedCategory, setSelectedCategory] = useState<string>('todos');
@@ -657,8 +908,24 @@ export default function App() {
   const [modalVariantId, setModalVariantId] = useState<string>('');
   const [modalSelectedToppings, setModalSelectedToppings] = useState<string[]>([]);
 
-  // Inventory state
-  const [ingredients, setIngredients] = useState<Ingredient[]>(INITIAL_INGREDIENTS);
+  // Inventory state (Offline Persistent)
+  const [ingredients, setIngredients] = useState<Ingredient[]>(() => {
+    try {
+      const saved = localStorage.getItem('ambiorix_ingredients');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to load ingredients from storage', e);
+    }
+    return INITIAL_INGREDIENTS;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('ambiorix_ingredients', JSON.stringify(ingredients));
+    } catch (e) {
+      console.warn('Storage save ingredients error', e);
+    }
+  }, [ingredients]);
 
   // Sales History
   const [salesHistory, setSalesHistory] = useState<SaleRecord[]>([
@@ -667,34 +934,321 @@ export default function App() {
       saleNumber: 'V-00101',
       items: [
         {
-          cartItemId: 'ci-1',
-          productId: 'prod-1',
-          productName: 'Vainilla Francesa',
-          variantId: 'var-2',
-          variantName: '2 Bolas (160g)',
-          basePrice: 6000,
-          variantPriceDelta: 5000,
-          unitPrice: 11000,
+          cartItemId: 'ci-combo-1',
+          productId: 'prod-combo-1',
+          productName: 'Combo Pareja Dulce',
+          basePrice: 28000,
+          unitPrice: 28000,
           quantity: 1,
-          toppings: [{ id: 'top-1', name: 'Chispas de Chocolate Belga', price: 1500 }],
-          totalPrice: 12500,
-          estimatedCost: 3900
+          totalPrice: 28000,
+          estimatedCost: 8500
         }
       ],
-      subtotal: 12500,
+      subtotal: 28000,
       discount: 0,
-      total: 12500,
+      total: 28000,
       paymentMethod: 'NEQUI',
-      nequiAmount: 12500,
-      nequiSenderName: 'SANTIAGO ALEJANDRO MORGAN AVILA',
-      nequiChannel: 'Bre-B',
-      timestamp: '11:20 a. m.',
-      dateStr: 'Hoy',
+      nequiAmount: 28000,
+      nequiSenderName: 'Carlos Mendoza',
+      nequiChannel: 'App Nequi',
+      timestamp: '10:15 a. m.',
+      dateStr: '2026-10-26',
       cashierName: 'Laura Gómez',
       status: 'COMPLETED',
-      cogsCost: 3900
+      cogsCost: 8500
+    },
+    {
+      id: 'sale-102',
+      saleNumber: 'V-00102',
+      items: [
+        {
+          cartItemId: 'ci-102-1',
+          productId: 'prod-1',
+          productName: 'Vainilla Francesa',
+          basePrice: 6500,
+          unitPrice: 6500,
+          quantity: 1,
+          totalPrice: 6500,
+          estimatedCost: 1500
+        },
+        {
+          cartItemId: 'ci-102-2',
+          productId: 'prod-3',
+          productName: 'Paleta Artesanal de Arequipe',
+          basePrice: 8000,
+          unitPrice: 8000,
+          quantity: 1,
+          totalPrice: 8000,
+          estimatedCost: 2100
+        }
+      ],
+      subtotal: 14500,
+      discount: 0,
+      total: 14500,
+      paymentMethod: 'NEQUI',
+      nequiAmount: 14500,
+      nequiSenderName: 'Valentina Ríos',
+      nequiChannel: 'Bre-B',
+      timestamp: '11:40 a. m.',
+      dateStr: '2026-10-26',
+      cashierName: 'Laura Gómez',
+      status: 'COMPLETED',
+      cogsCost: 3600
+    },
+    {
+      id: 'sale-103',
+      saleNumber: 'V-00103',
+      items: [
+        {
+          cartItemId: 'ci-103-1',
+          productId: 'prod-2',
+          productName: 'Copa Chocolate Suprema',
+          basePrice: 11000,
+          unitPrice: 11000,
+          quantity: 2,
+          totalPrice: 22000,
+          estimatedCost: 5000
+        }
+      ],
+      subtotal: 22000,
+      discount: 0,
+      total: 22000,
+      paymentMethod: 'CASH',
+      cashAmount: 22000,
+      timestamp: '12:30 p. m.',
+      dateStr: '2026-10-26',
+      cashierName: 'Laura Gómez',
+      status: 'COMPLETED',
+      cogsCost: 5000
+    },
+    {
+      id: 'sale-p1-1',
+      saleNumber: 'V-00085',
+      items: [
+        {
+          cartItemId: 'ci-p1-1',
+          productId: 'prod-combo-1',
+          productName: 'Combo Pareja Dulce',
+          basePrice: 28000,
+          unitPrice: 28000,
+          quantity: 1,
+          totalPrice: 28000,
+          estimatedCost: 8500
+        },
+        {
+          cartItemId: 'ci-p1-2',
+          productId: 'prod-7',
+          productName: 'Banana Split Clásica',
+          basePrice: 17000,
+          unitPrice: 17000,
+          quantity: 1,
+          totalPrice: 17000,
+          estimatedCost: 4200
+        }
+      ],
+      subtotal: 45000,
+      discount: 0,
+      total: 45000,
+      paymentMethod: 'NEQUI',
+      nequiAmount: 45000,
+      timestamp: '03:10 p. m.',
+      dateStr: '2026-10-05',
+      cashierName: 'Camila Restrepo',
+      status: 'COMPLETED',
+      cogsCost: 12700
     }
   ]);
+
+  // Financial Expenses
+  const [financialExpenses, setFinancialExpenses] = useState<any[]>([
+    {
+      id: 'exp-today-1',
+      amount: 18000,
+      category: 'Insumos',
+      description: 'Compra de 6 litros de leche entera fresca',
+      paymentSource: 'Caja efectivo',
+      cashierName: 'Laura Gómez',
+      notes: 'Factura prov #441',
+      dateStr: '2026-10-26',
+      time: '10:45 AM',
+      isLinkedToInventory: true,
+      status: 'ACTIVE'
+    },
+    {
+      id: 'exp-today-2',
+      amount: 12000,
+      category: 'Transporte',
+      description: 'Domicilio express de frutas frescas',
+      paymentSource: 'Caja efectivo',
+      cashierName: 'Laura Gómez',
+      notes: 'Envío moto',
+      dateStr: '2026-10-26',
+      time: '11:20 AM',
+      isLinkedToInventory: false,
+      status: 'ACTIVE'
+    },
+    {
+      id: 'exp-p1-1',
+      amount: 25000,
+      category: 'Reposición inventario',
+      description: '100 Barquillos dulces artesanales',
+      paymentSource: 'Caja efectivo',
+      cashierName: 'Camila Restrepo',
+      notes: 'Reposición stock',
+      dateStr: '2026-10-05',
+      time: '02:00 PM',
+      isLinkedToInventory: true,
+      status: 'ACTIVE'
+    },
+    {
+      id: 'exp-p2-1',
+      amount: 35000,
+      category: 'Servicios',
+      description: 'Pago de servicio de internet banda ancha',
+      paymentSource: 'Nequi',
+      cashierName: 'Laura Gómez',
+      notes: 'Recibo Claro',
+      dateStr: '2026-10-12',
+      time: '09:30 AM',
+      isLinkedToInventory: false,
+      status: 'ACTIVE'
+    }
+  ]);
+
+  // Financial Payment Transactions (Decoupled from sales for precise non-duplication)
+  const [financialPaymentTransactions, setFinancialPaymentTransactions] = useState<any[]>([
+    {
+      id: 'tx-today-1',
+      method: 'NEQUI',
+      amount: 28000,
+      dateStr: '2026-10-26',
+      time: '10:15 AM',
+      status: 'CONFIRMED',
+      saleId: 'sale-101',
+      saleNumber: 'V-00101',
+      cashierName: 'Laura Gómez',
+      payerNameOrPhone: 'Carlos Mendoza (3124567890)',
+      bankTransactionRef: 'M884920',
+      smsEventId: 'SMS-20261026-001',
+      originInstallation: 'Tienda Local',
+      nequiChannel: 'App Nequi',
+      entryType: 'SALE_PAYMENT'
+    },
+    {
+      id: 'tx-today-2',
+      method: 'NEQUI',
+      amount: 14500,
+      dateStr: '2026-10-26',
+      time: '11:40 AM',
+      status: 'CONFIRMED',
+      saleId: 'sale-102',
+      saleNumber: 'V-00102',
+      cashierName: 'Laura Gómez',
+      payerNameOrPhone: 'Valentina Ríos',
+      bankTransactionRef: undefined, // Displays "No disponible en el SMS"
+      smsEventId: 'SMS-20261026-002',
+      originInstallation: 'Tienda Local',
+      nequiChannel: 'Bre-B',
+      entryType: 'SALE_PAYMENT'
+    },
+    {
+      id: 'tx-today-3',
+      method: 'CASH',
+      amount: 22000,
+      dateStr: '2026-10-26',
+      time: '12:30 PM',
+      status: 'CONFIRMED',
+      saleId: 'sale-103',
+      saleNumber: 'V-00103',
+      cashierName: 'Laura Gómez',
+      entryType: 'SALE_PAYMENT',
+      notes: 'Pago con billete de $50.000'
+    },
+    {
+      id: 'tx-today-4',
+      method: 'CASH',
+      amount: 50000,
+      dateStr: '2026-10-26',
+      time: '09:00 AM',
+      status: 'CONFIRMED',
+      cashierName: 'Laura Gómez',
+      entryType: 'MANUAL_CASH_IN',
+      notes: 'Fondo de sencillo adicional para vueltas'
+    },
+    {
+      id: 'tx-p1-1',
+      method: 'NEQUI',
+      amount: 45000,
+      dateStr: '2026-10-05',
+      time: '03:10 PM',
+      status: 'CONFIRMED',
+      saleId: 'sale-p1-1',
+      saleNumber: 'V-00085',
+      cashierName: 'Camila Restrepo',
+      payerNameOrPhone: 'Andrés Morales',
+      bankTransactionRef: 'M765431',
+      smsEventId: 'SMS-20261005-010',
+      originInstallation: 'Tienda Local',
+      entryType: 'SALE_PAYMENT'
+    },
+    {
+      id: 'tx-p1-2',
+      method: 'CASH',
+      amount: 32000,
+      dateStr: '2026-10-05',
+      time: '04:25 PM',
+      status: 'CONFIRMED',
+      saleId: 'sale-p1-2',
+      saleNumber: 'V-00086',
+      cashierName: 'Camila Restrepo',
+      entryType: 'SALE_PAYMENT'
+    },
+    {
+      id: 'tx-p2-1',
+      method: 'NEQUI',
+      amount: 62000,
+      dateStr: '2026-10-12',
+      time: '02:20 PM',
+      status: 'CONFIRMED',
+      saleId: 'sale-p2-1',
+      saleNumber: 'V-00092',
+      cashierName: 'Laura Gómez',
+      payerNameOrPhone: 'Mariana Duque',
+      bankTransactionRef: undefined, // "No disponible en el SMS"
+      smsEventId: 'SMS-20261012-005',
+      originInstallation: 'Tienda Remota: Pizzería',
+      entryType: 'SALE_PAYMENT'
+    },
+    {
+      id: 'tx-p3-1',
+      method: 'CASH',
+      amount: 54000,
+      dateStr: '2026-10-18',
+      time: '05:15 PM',
+      status: 'CONFIRMED',
+      saleId: 'sale-p3-1',
+      saleNumber: 'V-00098',
+      cashierName: 'Valentina Ortiz',
+      entryType: 'SALE_PAYMENT'
+    }
+  ]);
+
+  // Calendar & Financial Module States
+  const [calendarYear, setCalendarYear] = useState<number>(2026);
+  const [calendarMonth, setCalendarMonth] = useState<number>(10); // 1..12
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string>('2026-10-26');
+  const [financialTab, setFinancialTab] = useState<'nequi' | 'cash' | 'expenses' | 'products'>('nequi');
+  const [inspectingNequiTx, setInspectingNequiTx] = useState<any | null>(null);
+  const [inspectingProductItem, setInspectingProductItem] = useState<any | null>(null);
+  const [showNewExpenseModal, setShowNewExpenseModal] = useState<boolean>(false);
+  const [newExpenseAmount, setNewExpenseAmount] = useState<string>('');
+  const [newExpenseCategory, setNewExpenseCategory] = useState<string>('Insumos');
+  const [newExpenseDesc, setNewExpenseDesc] = useState<string>('');
+  const [newExpenseSource, setNewExpenseSource] = useState<string>('Caja efectivo');
+  const [newExpenseNotes, setNewExpenseNotes] = useState<string>('');
+  const [newExpenseLinkedInventory, setNewExpenseLinkedInventory] = useState<boolean>(false);
+  const [expenseToAnnul, setExpenseToAnnul] = useState<any | null>(null);
+  const [annulReason, setAnnulReason] = useState<string>('');
 
   // Cash shift state
   const [cashShift, setCashShift] = useState<CashShift>({
@@ -901,63 +1455,143 @@ export default function App() {
     setDiscountPercent(0);
   };
 
-  // Recipe Ingredient Deductions upon completed sale
-  const deductIngredientsForSale = (items: CartItem[]) => {
-    setIngredients(prevIngredients => {
-      const updated = [...prevIngredients];
-      items.forEach(item => {
-        const prod = PRODUCTS.find(p => p.id === item.productId);
-        const variant = prod?.variants.find(v => v.id === item.variantId);
+  // Recipe & Combo Ingredient Deductions upon completed sale
+  const deductIngredientsForSale = (items: CartItem[]): boolean => {
+    // 1. Resolve requirements recursively
+    const ingredientDeductions: Record<string, { name: string; qty: number; unit: string }> = {};
+    const productDeductions: Record<string, { name: string; qty: number }> = {};
 
-        // Deduct base ice cream grams
-        if (prod && variant?.weightGrams) {
-          const ingIndex = updated.findIndex(i => i.id === prod.baseIngredientId);
-          if (ingIndex >= 0) {
-            const gramsToDeduct = variant.weightGrams * item.quantity;
-            updated[ingIndex] = {
-              ...updated[ingIndex],
-              currentStock: Math.max(0, updated[ingIndex].currentStock - gramsToDeduct)
-            };
-          }
-        }
+    const resolveProduct = (productId: string, multiplier: number, visited: Set<string>) => {
+      if (visited.has(productId)) return; // circular reference prevention
+      visited.add(productId);
 
-        // Deduct cone unit
-        if (variant?.coneUnits) {
-          const coneIndex = updated.findIndex(i => i.id === 'ing-6');
-          if (coneIndex >= 0) {
-            updated[coneIndex] = {
-              ...updated[coneIndex],
-              currentStock: Math.max(0, updated[coneIndex].currentStock - (variant.coneUnits * item.quantity))
-            };
-          }
-        }
+      const prod = products.find(p => p.id === productId);
+      if (!prod) return;
 
-        // Deduct cup unit
-        if (variant?.cupUnits) {
-          const cupIndex = updated.findIndex(i => i.id === 'ing-7');
-          if (cupIndex >= 0) {
-            updated[cupIndex] = {
-              ...updated[cupIndex],
-              currentStock: Math.max(0, updated[cupIndex].currentStock - (variant.cupUnits * item.quantity))
-            };
-          }
-        }
-
-        // Deduct toppings
-        item.toppings.forEach(top => {
-          if (top.ingredientId && top.gramsRequired) {
-            const topIndex = updated.findIndex(i => i.id === top.ingredientId);
-            if (topIndex >= 0) {
-              updated[topIndex] = {
-                ...updated[topIndex],
-                currentStock: Math.max(0, updated[topIndex].currentStock - (top.gramsRequired * item.quantity))
-              };
+      if (prod.isCombo && prod.comboItems && prod.comboItems.length > 0) {
+        prod.comboItems.forEach(ci => {
+          resolveProduct(ci.productId, ci.quantity * multiplier, new Set(visited));
+        });
+      } else if (prod.recipe && prod.recipe.length > 0) {
+        prod.recipe.forEach(rec => {
+          const ing = ingredients.find(i => i.id === rec.ingredientId);
+          if (ing) {
+            let converted = rec.quantity;
+            try {
+              converted = UnitConverter.convert(rec.quantity, rec.unit, ing.unit);
+            } catch {
+              converted = rec.quantity;
             }
+            const totalRequired = converted * multiplier;
+            if (!ingredientDeductions[ing.id]) {
+              ingredientDeductions[ing.id] = { name: ing.name, qty: 0, unit: ing.unit };
+            }
+            ingredientDeductions[ing.id].qty += totalRequired;
           }
         });
+      } else {
+        if (!productDeductions[prod.id]) {
+          productDeductions[prod.id] = { name: prod.name, qty: 0 };
+        }
+        productDeductions[prod.id].qty += multiplier;
+      }
+    };
+
+    items.forEach(it => {
+      resolveProduct(it.productId, it.quantity, new Set());
+
+      // Also process toppings
+      (it.toppings || []).forEach(top => {
+        if (top.ingredientId && top.gramsRequired) {
+          const ing = ingredients.find(i => i.id === top.ingredientId);
+          if (ing) {
+            let converted = top.gramsRequired;
+            try {
+              converted = UnitConverter.convert(top.gramsRequired, 'g', ing.unit);
+            } catch {
+              converted = top.gramsRequired;
+            }
+            const total = converted * it.quantity;
+            if (!ingredientDeductions[ing.id]) {
+              ingredientDeductions[ing.id] = { name: ing.name, qty: 0, unit: ing.unit };
+            }
+            ingredientDeductions[ing.id].qty += total;
+          }
+        }
       });
-      return updated;
     });
+
+    // 2. Validate sufficient stock
+    for (const [ingId, req] of Object.entries(ingredientDeductions)) {
+      const ing = ingredients.find(i => i.id === ingId);
+      if (ing && ing.currentStock < req.qty) {
+        alert(`Stock insuficiente de '${req.name}': disponible ${ing.currentStock} ${ing.unit}, requerido ${req.qty} ${req.unit}`);
+        return false;
+      }
+    }
+
+    for (const [prodId, req] of Object.entries(productDeductions)) {
+      const prod = products.find(p => p.id === prodId);
+      if (prod && !prod.allowNegativeStock && prod.stockQuantity < req.qty) {
+        alert(`Stock insuficiente del producto '${prod.name}': disponible ${prod.stockQuantity}, requerido ${req.qty}`);
+        return false;
+      }
+    }
+
+    // 3. Apply deductions and log movements
+    const newMovements: InventoryMovement[] = [];
+    const nowTime = new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+
+    setIngredients(prevIngs => {
+      return prevIngs.map(ing => {
+        const req = ingredientDeductions[ing.id];
+        if (req) {
+          const newStock = Math.max(0, ing.currentStock - req.qty);
+          newMovements.push({
+            id: `mov-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            productId: ing.id,
+            productName: ing.name,
+            previousStock: ing.currentStock,
+            change: -req.qty,
+            resultingStock: newStock,
+            type: 'SALE_RECIPE',
+            reason: `Consumo receta venta`,
+            dateFormatted: nowTime,
+            userName: activeCashier.name
+          });
+          return { ...ing, currentStock: newStock };
+        }
+        return ing;
+      });
+    });
+
+    setProducts(prevProds => {
+      return prevProds.map(prod => {
+        const req = productDeductions[prod.id];
+        if (req) {
+          const newStock = prod.stockQuantity - req.qty;
+          newMovements.push({
+            id: `mov-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            productId: prod.id,
+            productName: prod.name,
+            previousStock: prod.stockQuantity,
+            change: -req.qty,
+            resultingStock: newStock,
+            type: 'SALE',
+            reason: `Venta POS`,
+            dateFormatted: nowTime,
+            userName: activeCashier.name
+          });
+          return { ...prod, stockQuantity: newStock, updatedAt: Date.now() };
+        }
+        return prod;
+      });
+    });
+
+    if (newMovements.length > 0) {
+      setInventoryMovements(prev => [...newMovements, ...prev]);
+    }
+    return true;
   };
 
   // Complete Cash Sale
@@ -978,13 +1612,29 @@ export default function App() {
       cashAmount: cartTotal,
       timestamp: timeStr,
       dateStr: 'Hoy',
-      cashierName: cashShift.cashierName,
+      cashierName: activeCashier.name,
       status: 'COMPLETED',
       cogsCost: cartEstimatedCost
     };
 
-    deductIngredientsForSale(cart);
+    if (!deductIngredientsForSale(cart)) return;
     setSalesHistory(prev => [newSale, ...prev]);
+
+    // Financial transaction record
+    const cashTx = {
+      id: `tx-${Date.now()}`,
+      method: 'CASH',
+      amount: cartTotal,
+      dateStr: '2026-10-26',
+      time: timeStr,
+      status: 'CONFIRMED',
+      saleId: newSale.id,
+      saleNumber: orderNo,
+      cashierName: activeCashier.name,
+      entryType: 'SALE_PAYMENT',
+      notes: 'Venta POS en efectivo'
+    };
+    setFinancialPaymentTransactions(prev => [cashTx, ...prev]);
 
     // Update cash shift
     setCashShift(prev => ({
@@ -997,7 +1647,7 @@ export default function App() {
     setCurrentSuccessPayment({
       amount: cartTotal,
       senderName: 'Venta en Efectivo',
-      channel: 'Caja Heladería',
+      channel: 'Caja Salon de Onces',
       orderNumber: orderNo
     });
 
@@ -1175,13 +1825,33 @@ export default function App() {
         nequiChannel: 'Bre-B',
         timestamp: timeStr,
         dateStr: 'Hoy',
-        cashierName: cashShift.cashierName,
+        cashierName: activeCashier.name,
         status: 'COMPLETED',
         cogsCost: cartEstimatedCost
       };
 
-      deductIngredientsForSale(cart);
+      if (!deductIngredientsForSale(cart)) return;
       setSalesHistory(prev => [newSale, ...prev]);
+
+      // Financial transaction record
+      const nequiTx = {
+        id: `tx-${Date.now()}`,
+        method: 'NEQUI',
+        amount: amt,
+        dateStr: '2026-10-26',
+        time: timeStr,
+        status: 'CONFIRMED',
+        saleId: newSale.id,
+        saleNumber: orderNo,
+        cashierName: activeCashier.name,
+        payerNameOrPhone: sender,
+        bankTransactionRef: `M${Math.floor(100000 + Math.random() * 900000)}`,
+        smsEventId: `SMS-${Date.now()}`,
+        originInstallation: 'Tienda Local',
+        nequiChannel: 'Bre-B',
+        entryType: 'SALE_PAYMENT'
+      };
+      setFinancialPaymentTransactions(prev => [nequiTx, ...prev]);
 
       // Inform other store: PAID via SMS
       const paidLog: ProtocolMessageLog = {
@@ -1320,7 +1990,7 @@ export default function App() {
       <div className="w-full max-w-md hidden sm:flex items-center justify-between py-1.5 px-3 text-[11px] text-slate-400">
         <div className="flex items-center space-x-1.5">
           <Smartphone className="w-3.5 h-3.5 text-amber-400" />
-          <span className="font-bold text-slate-300">Ambiorix POS Móvil</span>
+          <span className="font-bold text-slate-300">Ambiorix Pay Móvil</span>
           <span>•</span>
           <span>Android 10 - 14</span>
         </div>
@@ -1358,14 +2028,16 @@ export default function App() {
         {/* Mobile App Header */}
         <div className="bg-[#0B1224] px-4 py-2.5 flex items-center justify-between border-b border-slate-800 shadow-sm z-20">
           <div className="flex items-center space-x-2.5">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center text-slate-950 font-black text-sm shadow-md shadow-amber-500/20">
-              🍦
-            </div>
+            <img
+              src="/assets/logo.png"
+              alt="Logo Ambiorix Pay"
+              className="w-8 h-8 rounded-full border border-amber-500/40 object-contain bg-slate-900 p-0.5 shadow-md shadow-amber-500/10"
+            />
             <div>
               <div className="flex items-center space-x-1.5">
-                <h1 className="font-black text-xs tracking-wide text-white">AMBIORIX POS</h1>
+                <h1 className="font-black text-xs tracking-wide text-white">AMBIORIX PAY</h1>
                 <span className="text-[9px] bg-amber-500/20 text-amber-300 font-extrabold px-1.5 py-0.2 rounded">
-                  {localStoreName}
+                  Salon de Onces
                 </span>
               </div>
               <p className="text-[10px] text-slate-400 truncate max-w-[170px]">
@@ -1374,23 +2046,28 @@ export default function App() {
             </div>
           </div>
 
-          {/* Role Pill & Test Voice */}
+          {/* Role Pill, Cashier Badge & Financial Calendar Action */}
           <div className="flex items-center space-x-1.5">
+            {/* Active Cashier Badge */}
+            <button
+              onClick={() => setShowCashierModal(true)}
+              className="px-2 py-1 bg-slate-900 border border-slate-800 text-slate-300 hover:text-white rounded-lg text-[10px] font-bold flex items-center space-x-1 cursor-pointer"
+              title="Cambiar o editar nombre de la cajera"
+            >
+              <Users className="w-3 h-3 text-amber-400" />
+              <span className="max-w-[70px] truncate">{activeCashier.name}</span>
+            </button>
+
+            {/* Direct Button to Open Financial History Calendar (Sound test removed as requested) */}
             <button
               onClick={() => {
-                playChimeSound();
-                setTimeout(() => {
-                  speakSpanishPhrase(
-                    getPaymentPhrase(15000, 'Santiago Morgan', includeThankYou),
-                    () => setIsSpeaking(true),
-                    () => setIsSpeaking(false)
-                  );
-                }, 250);
+                setMobileTab('settings');
+                setSettingsSection('history');
               }}
-              className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-amber-400 hover:text-amber-300"
-              title="Probar voz en español"
+              className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-amber-400 hover:text-amber-300 cursor-pointer"
+              title="Historial de Ventas, Pagos y Gastos con Calendario"
             >
-              <Volume2 className="w-3.5 h-3.5" />
+              <Calendar className="w-3.5 h-3.5" />
             </button>
 
             {currentRole === 'CASHIER' ? (
@@ -1421,21 +2098,49 @@ export default function App() {
           {/* TAB 1: POS / VENTA HELADERÍA                                   */}
           {/* ============================================================== */}
           {mobileTab === 'pos' && (
-            <div className="p-3.5 space-y-3.5 flex flex-col">
+            <div className="p-3.5 space-y-3 flex flex-col">
               
+              {/* Owner Quick Actions Toolbar (Products, Categories, Inventory) */}
+              {currentRole === 'OWNER' && (
+                <div className="flex items-center gap-1.5 p-1 bg-slate-950/80 border border-amber-500/30 rounded-xl text-[10px]">
+                  <button
+                    onClick={() => setShowProductAdminModal(true)}
+                    className="flex-1 py-1 px-2 rounded-lg bg-amber-500/10 text-amber-300 font-bold border border-amber-500/30 hover:bg-amber-500/20 flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <Boxes className="w-3 h-3" />
+                    <span>Productos</span>
+                  </button>
+                  <button
+                    onClick={() => setShowCategoryAdminModal(true)}
+                    className="flex-1 py-1 px-2 rounded-lg bg-amber-500/10 text-amber-300 font-bold border border-amber-500/30 hover:bg-amber-500/20 flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <Layers className="w-3 h-3" />
+                    <span>Categorías</span>
+                  </button>
+                  <button
+                    onClick={() => setShowStockAdminModal(true)}
+                    className="flex-1 py-1 px-2 rounded-lg bg-amber-500/10 text-amber-300 font-bold border border-amber-500/30 hover:bg-amber-500/20 flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Inventario</span>
+                  </button>
+                </div>
+              )}
+
               {/* Category selector pills */}
               <div className="flex items-center space-x-1.5 overflow-x-auto pb-1 scrollbar-none text-[11px]">
-                {CATEGORIES.map(cat => (
+                {[{ id: 'todos', name: 'Todos', emoji: '🍦', isActive: true, displayOrder: -1 }, ...categories].filter(c => c.isActive).map(cat => (
                   <button
                     key={cat.id}
                     onClick={() => setSelectedCategory(cat.id)}
-                    className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition cursor-pointer ${
+                    className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition cursor-pointer flex items-center gap-1 ${
                       selectedCategory === cat.id
                         ? 'bg-amber-500 text-slate-950 font-black shadow-sm'
                         : 'bg-slate-900/90 text-slate-300 border border-slate-800'
                     }`}
                   >
-                    {cat.name}
+                    <span>{cat.emoji}</span>
+                    <span>{cat.name}</span>
                   </button>
                 ))}
               </div>
@@ -1452,16 +2157,15 @@ export default function App() {
                 />
               </div>
 
-              {/* Compact 2-Column Product Grid */}
+              {/* Compact 2-Column Product Grid (Dynamic from State) */}
               <div className="grid grid-cols-2 gap-2.5">
-                {PRODUCTS.filter(p => {
+                {products.filter(p => {
                   const matchCat = selectedCategory === 'todos' || p.categoryId === selectedCategory;
-                  const matchQuery = p.name.toLowerCase().includes(searchQuery.toLowerCase());
-                  return matchCat && matchQuery;
+                  const matchQuery = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || (p.description && p.description.toLowerCase().includes(searchQuery.toLowerCase()));
+                  return p.isActive && matchCat && matchQuery;
                 }).map(product => {
-                  const baseIng = ingredients.find(i => i.id === product.baseIngredientId);
-                  const isLowStock = baseIng && baseIng.currentStock <= baseIng.minStockAlert;
-                  const isOutOfStock = baseIng && baseIng.currentStock <= 0;
+                  const isOutOfStock = product.stockQuantity <= 0;
+                  const isLowStock = !isOutOfStock && product.stockQuantity <= product.minStockAlert;
 
                   return (
                     <div
@@ -1469,25 +2173,33 @@ export default function App() {
                       onClick={() => !isOutOfStock && openProductModal(product)}
                       className={`p-3 rounded-2xl bg-slate-900/80 border transition-all flex flex-col justify-between cursor-pointer select-none active:scale-[0.98] ${
                         isOutOfStock
-                          ? 'opacity-40 border-slate-800'
+                          ? 'opacity-40 border-slate-800 cursor-not-allowed'
                           : 'border-slate-800 hover:border-amber-500/50'
                       }`}
                     >
                       <div>
                         <div className="flex items-start justify-between">
-                          <span className="text-2xl p-1 rounded-lg bg-slate-950 border border-slate-800">
-                            {product.emoji}
-                          </span>
-                          {product.badge && (
+                          {product.imagePath ? (
+                            <img src={product.imagePath} alt={product.name} className="w-10 h-10 object-cover rounded-lg border border-slate-800" />
+                          ) : (
+                            <span className="text-2xl p-1 rounded-lg bg-slate-950 border border-slate-800">
+                              {product.emoji}
+                            </span>
+                          )}
+
+                          {isOutOfStock ? (
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-red-500/20 text-red-300">
+                              Agotado
+                            </span>
+                          ) : isLowStock ? (
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300">
+                              {product.stockQuantity} disp.
+                            </span>
+                          ) : product.badge ? (
                             <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
                               {product.badge}
                             </span>
-                          )}
-                          {isLowStock && !isOutOfStock && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-red-500/20 text-red-300">
-                              Poco
-                            </span>
-                          )}
+                          ) : null}
                         </div>
 
                         <h3 className="mt-2 font-bold text-xs text-white leading-tight">
@@ -1641,41 +2353,46 @@ export default function App() {
             <div className="p-3.5 space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="text-sm font-black text-white">Stock de Ingredientes</h2>
-                  <p className="text-[10px] text-slate-400">Deducción por receta en cada venta</p>
+                  <h2 className="text-sm font-black text-white">Inventario de Productos</h2>
+                  <p className="text-[10px] text-slate-400">Existencias, mermas y auditoría</p>
                 </div>
                 <button
-                  onClick={() => {
-                    setIngredients(INITIAL_INGREDIENTS);
-                    alert('Stock restaurado a valores iniciales');
-                  }}
-                  className="p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-amber-400 text-xs"
-                  title="Restablecer stock"
+                  onClick={() => setShowStockAdminModal(true)}
+                  className="px-2.5 py-1.5 bg-amber-500 text-slate-950 font-bold text-xs rounded-xl shadow cursor-pointer flex items-center gap-1"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Ajustar Stock</span>
                 </button>
               </div>
 
+              {/* Products Stock List */}
               <div className="space-y-2">
-                {ingredients.map(ing => {
-                  const isLow = ing.currentStock <= ing.minStockAlert && ing.currentStock > 0;
-                  const isOut = ing.currentStock <= 0;
+                {products.map(prod => {
+                  const isLow = prod.stockQuantity <= prod.minStockAlert && prod.stockQuantity > 0;
+                  const isOut = prod.stockQuantity <= 0;
 
                   return (
                     <div
-                      key={ing.id}
+                      key={prod.id}
                       className="p-2.5 bg-slate-900/90 border border-slate-800 rounded-xl flex items-center justify-between text-xs"
                     >
-                      <div>
-                        <span className="font-bold text-white block text-[11px]">{ing.name}</span>
-                        <span className="text-[9px] text-slate-500 font-mono">
-                          Lote: {ing.batchCode} • Vence: {ing.expiryDate}
-                        </span>
+                      <div className="flex items-center gap-2">
+                        {prod.imagePath ? (
+                          <img src={prod.imagePath} alt={prod.name} className="w-8 h-8 object-cover rounded-lg border border-slate-800" />
+                        ) : (
+                          <span className="text-lg">{prod.emoji}</span>
+                        )}
+                        <div>
+                          <span className="font-bold text-white block text-[11px]">{prod.name}</span>
+                          <span className="text-[9px] text-slate-400">
+                            Precio: {formatCOP(prod.basePrice)} {currentRole === 'OWNER' && `• Costo: ${formatCOP(prod.baseCost)}`}
+                          </span>
+                        </div>
                       </div>
 
                       <div className="text-right">
                         <span className="font-black text-amber-400 block text-xs">
-                          {ing.currentStock.toLocaleString('es-CO')} {ing.unit}
+                          {prod.stockQuantity} {prod.unit}
                         </span>
                         {isOut ? (
                           <span className="text-[9px] font-black text-red-500">Agotado</span>
@@ -1688,6 +2405,29 @@ export default function App() {
                     </div>
                   );
                 })}
+              </div>
+
+              <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-300">Insumos de Receta Base</span>
+                <button
+                  onClick={() => {
+                    setIngredients(INITIAL_INGREDIENTS);
+                    alert('Stock restaurado a valores iniciales');
+                  }}
+                  className="p-1 text-slate-400 hover:text-amber-400"
+                  title="Restaurar insumos"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div className="space-y-1.5 opacity-80">
+                {ingredients.slice(0, 5).map(ing => (
+                  <div key={ing.id} className="p-2 bg-slate-950/60 border border-slate-900 rounded-lg flex items-center justify-between text-[11px]">
+                    <span className="text-slate-300">{ing.name}</span>
+                    <span className="font-mono text-amber-300/80">{ing.currentStock} {ing.unit}</span>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -2060,47 +2800,981 @@ export default function App() {
               {/* ============================================================== */}
               {/* SUB-SECTION: HISTORIAL DE VENTAS                              */}
               {/* ============================================================== */}
-              {settingsSection === 'history' && (
-                <div className="space-y-3 animate-in fade-in duration-150">
-                  <div className="flex items-center space-x-2">
-                    <button
-                      onClick={() => setSettingsSection('main')}
-                      className="p-1.5 bg-slate-900 border border-slate-800 rounded-xl text-slate-300"
-                    >
-                      <ArrowLeft className="w-4 h-4" />
-                    </button>
-                    <div>
-                      <h2 className="text-sm font-black text-white">Historial de Ventas</h2>
-                      <p className="text-[10px] text-slate-400">{salesHistory.length} registros guardados</p>
-                    </div>
-                  </div>
+              {/* ============================================================== */}
+              {/* SUB-SECTION: HISTORIAL DE VENTAS, PAGOS Y GASTOS (CALENDARIO) */}
+              {/* ============================================================== */}
+              {settingsSection === 'history' && (() => {
+                const monthNames = [
+                  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+                  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+                ];
+                const daysInMonth = new Date(calendarYear, calendarMonth, 0).getDate();
+                const firstDayDow = (new Date(calendarYear, calendarMonth - 1, 1).getDay() + 6) % 7; // 0=Mon, 6=Sun
 
-                  <div className="space-y-2">
-                    {salesHistory.map(sale => (
-                      <div
-                        key={sale.id}
-                        className="p-3 bg-slate-900/90 border border-slate-800 rounded-xl flex items-center justify-between text-xs"
-                      >
+                // Selected date financial calculations
+                const selectedNequiTxs = financialPaymentTransactions.filter(
+                  tx => tx.method === 'NEQUI' && tx.dateStr === selectedCalendarDate && tx.status === 'CONFIRMED'
+                );
+                const selectedCashTxs = financialPaymentTransactions.filter(
+                  tx => tx.method === 'CASH' && tx.dateStr === selectedCalendarDate && tx.status === 'CONFIRMED'
+                );
+                const totalNequi = selectedNequiTxs.reduce((sum, tx) => sum + tx.amount, 0);
+                const totalCash = selectedCashTxs.reduce((sum, tx) => sum + tx.amount, 0);
+                const totalReceived = totalNequi + totalCash;
+
+                const dayExpenses = financialExpenses.filter(e => e.dateStr === selectedCalendarDate);
+                const activeExpenses = dayExpenses.filter(e => e.status === 'ACTIVE');
+                const totalExpenses = activeExpenses.reduce((sum, e) => sum + e.amount, 0);
+                const balanceNeto = totalReceived - totalExpenses;
+
+                // Products sold grouping on selected date
+                const matchingSales = salesHistory.filter(s => {
+                  if (s.status !== 'COMPLETED') return false;
+                  if (s.dateStr === selectedCalendarDate) return true;
+                  if (selectedCalendarDate === '2026-10-26' && (s.dateStr === 'Hoy' || s.dateStr === '2026-10-26')) return true;
+                  return false;
+                });
+
+                const productGroupMap: Record<string, {
+                  productId: string;
+                  productName: string;
+                  totalQty: number;
+                  unitPrice: number;
+                  totalRevenue: number;
+                  salesCount: number;
+                  occurrences: { saleNumber: string; time: string; quantity: number; total: number; cashier: string }[];
+                }> = {};
+
+                matchingSales.forEach(sale => {
+                  sale.items.forEach(item => {
+                    if (!productGroupMap[item.productId]) {
+                      productGroupMap[item.productId] = {
+                        productId: item.productId,
+                        productName: item.productName,
+                        totalQty: 0,
+                        unitPrice: item.unitPrice,
+                        totalRevenue: 0,
+                        salesCount: 0,
+                        occurrences: []
+                      };
+                    }
+                    productGroupMap[item.productId].totalQty += item.quantity;
+                    productGroupMap[item.productId].totalRevenue += item.totalPrice;
+                    productGroupMap[item.productId].salesCount += 1;
+                    productGroupMap[item.productId].occurrences.push({
+                      saleNumber: sale.saleNumber,
+                      time: sale.timestamp,
+                      quantity: item.quantity,
+                      total: item.totalPrice,
+                      cashier: sale.cashierName
+                    });
+                  });
+                });
+
+                const soldProductsList = Object.values(productGroupMap);
+
+                return (
+                  <div className="space-y-3 animate-in fade-in duration-150">
+                    {/* Top Navigation */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <button
+                          onClick={() => setSettingsSection('main')}
+                          className="p-1.5 bg-slate-900 border border-slate-800 rounded-xl text-slate-300 hover:text-white"
+                        >
+                          <ArrowLeft className="w-4 h-4" />
+                        </button>
                         <div>
-                          <div className="flex items-center space-x-1.5">
-                            <span className="font-bold text-white text-[11px]">{sale.saleNumber}</span>
-                            <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 text-[9px] font-bold">
-                              {sale.paymentMethod}
+                          <h2 className="text-sm font-black text-white">Historial de Ventas y Pagos</h2>
+                          <p className="text-[10px] text-slate-400">Auditoría con calendario mensual interactivo</p>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          setCalendarYear(2026);
+                          setCalendarMonth(10);
+                          setSelectedCalendarDate('2026-10-26');
+                        }}
+                        className="px-2 py-1 bg-amber-500/10 border border-amber-500/30 text-amber-300 font-bold text-[10px] rounded-lg hover:bg-amber-500/20"
+                      >
+                        Hoy
+                      </button>
+                    </div>
+
+                    {/* Month Navigator Header */}
+                    <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-2xl flex items-center justify-between">
+                      <button
+                        onClick={() => {
+                          if (calendarMonth === 1) {
+                            setCalendarYear(y => y - 1);
+                            setCalendarMonth(12);
+                          } else {
+                            setCalendarMonth(m => m - 1);
+                          }
+                        }}
+                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
+                        title="Mes anterior"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+
+                      <div className="text-center">
+                        <span className="text-xs font-black text-white uppercase tracking-wider block">
+                          {monthNames[calendarMonth - 1]} {calendarYear}
+                        </span>
+                        <span className="text-[9px] text-slate-400">Toca un día para inspeccionar</span>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          if (calendarMonth === 12) {
+                            setCalendarYear(y => y + 1);
+                            setCalendarMonth(1);
+                          } else {
+                            setCalendarMonth(m => m + 1);
+                          }
+                        }}
+                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
+                        title="Mes siguiente"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Monthly Calendar Grid */}
+                    <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-2xl">
+                      {/* Day of Week Labels */}
+                      <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-bold text-slate-500 mb-1">
+                        <div>Lun</div>
+                        <div>Mar</div>
+                        <div>Mié</div>
+                        <div>Jue</div>
+                        <div>Vie</div>
+                        <div>Sáb</div>
+                        <div>Dom</div>
+                      </div>
+
+                      {/* Day Grid */}
+                      <div className="grid grid-cols-7 gap-1">
+                        {/* Empty padding days */}
+                        {Array.from({ length: firstDayDow }).map((_, idx) => (
+                          <div key={`empty-${idx}`} className="h-9 rounded-lg opacity-10" />
+                        ))}
+
+                        {/* Month Days */}
+                        {Array.from({ length: daysInMonth }).map((_, idx) => {
+                          const dayNum = idx + 1;
+                          const dateKey = `${calendarYear}-${String(calendarMonth).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+                          const isSelected = selectedCalendarDate === dateKey;
+                          const isToday = dateKey === '2026-10-26';
+
+                          // Has financial transactions?
+                          const hasIncome = financialPaymentTransactions.some(
+                            tx => tx.dateStr === dateKey && tx.status === 'CONFIRMED'
+                          );
+                          const hasExpenses = financialExpenses.some(
+                            e => e.dateStr === dateKey && e.status === 'ACTIVE'
+                          );
+
+                          return (
+                            <button
+                              key={`day-${dayNum}`}
+                              onClick={() => setSelectedCalendarDate(dateKey)}
+                              className={`h-9 rounded-xl flex flex-col items-center justify-center transition relative ${
+                                isSelected
+                                  ? 'bg-amber-500 text-slate-950 font-black shadow-md shadow-amber-500/20 ring-2 ring-amber-400'
+                                  : isToday
+                                  ? 'bg-slate-800/90 text-amber-300 font-bold border border-amber-500/30'
+                                  : 'bg-slate-900/50 text-slate-300 hover:bg-slate-800 border border-slate-800/40'
+                              }`}
+                            >
+                              <span className="text-[11px]">{dayNum}</span>
+
+                              {/* Activity dots */}
+                              <div className="flex items-center space-x-0.5 mt-0.5">
+                                {hasIncome && (
+                                  <span
+                                    className={`w-1.5 h-1.5 rounded-full ${
+                                      isSelected ? 'bg-slate-950' : 'bg-emerald-400'
+                                    }`}
+                                    title="Ventas registradas"
+                                  />
+                                )}
+                                {hasExpenses && (
+                                  <span
+                                    className={`w-1.5 h-1.5 rounded-full ${
+                                      isSelected ? 'bg-rose-900' : 'bg-rose-400'
+                                    }`}
+                                    title="Gastos registrados"
+                                  />
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Legend */}
+                      <div className="flex items-center justify-center space-x-4 mt-2.5 pt-2 border-t border-slate-800/60 text-[9px] text-slate-400">
+                        <div className="flex items-center space-x-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                          <span>Ingresos (Nequi / Efectivo)</span>
+                        </div>
+                        <div className="flex items-center space-x-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                          <span>Gastos del día</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Selected Day Header & 3 Balance Cards */}
+                    <div className="p-3 bg-gradient-to-br from-[#0F172A] to-[#1E293B] border border-amber-500/40 rounded-2xl shadow-md space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-[10px] text-amber-300 uppercase font-black tracking-wider block">
+                            Día Seleccionado
+                          </span>
+                          <h3 className="text-xs font-bold text-white">
+                            {selectedCalendarDate === '2026-10-26' ? 'Hoy, 26 de Octubre de 2026' : selectedCalendarDate}
+                          </h3>
+                        </div>
+                        <div className="px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-[10px] text-slate-300 font-mono">
+                          {selectedNequiTxs.length + selectedCashTxs.length} pagos • {activeExpenses.length} gastos
+                        </div>
+                      </div>
+
+                      {/* 3 KPI Balance Cards */}
+                      <div className="grid grid-cols-3 gap-1.5 text-center">
+                        {/* Total Recibido */}
+                        <div className="p-2 rounded-xl bg-slate-900/90 border border-emerald-500/30">
+                          <span className="text-[9px] text-emerald-300 block font-bold">Total Recibido</span>
+                          <span className="text-xs font-black text-emerald-400 block mt-0.5">
+                            {formatCOP(totalReceived)}
+                          </span>
+                          <span className="text-[8px] text-slate-400 block truncate mt-0.5">
+                            Nequi + Efectivo
+                          </span>
+                        </div>
+
+                        {/* Total Gastos */}
+                        <div className="p-2 rounded-xl bg-slate-900/90 border border-rose-500/30">
+                          <span className="text-[9px] text-rose-300 block font-bold">Total Gastos</span>
+                          <span className="text-xs font-black text-rose-400 block mt-0.5">
+                            {formatCOP(totalExpenses)}
+                          </span>
+                          <span className="text-[8px] text-slate-400 block truncate mt-0.5">
+                            {activeExpenses.length} gastos
+                          </span>
+                        </div>
+
+                        {/* Balance Neto */}
+                        <div
+                          className={`p-2 rounded-xl bg-slate-900/90 border ${
+                            balanceNeto >= 0 ? 'border-amber-500/40' : 'border-rose-500/50'
+                          }`}
+                        >
+                          <span className="text-[9px] text-amber-300 block font-bold">Balance Neto</span>
+                          <span
+                            className={`text-xs font-black block mt-0.5 ${
+                              balanceNeto >= 0 ? 'text-amber-400' : 'text-rose-400'
+                            }`}
+                          >
+                            {formatCOP(balanceNeto)}
+                          </span>
+                          <span className="text-[8px] text-slate-400 block truncate mt-0.5">
+                            Recibido - Gastos
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 4 Tabs Bar: Nequi, Efectivo, Gastos, Vendido */}
+                    <div className="grid grid-cols-4 gap-1 p-1 bg-slate-900 border border-slate-800 rounded-xl text-[10px] font-bold">
+                      <button
+                        onClick={() => setFinancialTab('nequi')}
+                        className={`py-1.5 rounded-lg flex flex-col items-center justify-center transition ${
+                          financialTab === 'nequi'
+                            ? 'bg-amber-500 text-slate-950 font-black'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <span>Nequi</span>
+                        <span className="text-[8px] opacity-80">({selectedNequiTxs.length})</span>
+                      </button>
+
+                      <button
+                        onClick={() => setFinancialTab('cash')}
+                        className={`py-1.5 rounded-lg flex flex-col items-center justify-center transition ${
+                          financialTab === 'cash'
+                            ? 'bg-amber-500 text-slate-950 font-black'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <span>Efectivo</span>
+                        <span className="text-[8px] opacity-80">({selectedCashTxs.length})</span>
+                      </button>
+
+                      <button
+                        onClick={() => setFinancialTab('expenses')}
+                        className={`py-1.5 rounded-lg flex flex-col items-center justify-center transition ${
+                          financialTab === 'expenses'
+                            ? 'bg-amber-500 text-slate-950 font-black'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <span>Gastos</span>
+                        <span className="text-[8px] opacity-80">({activeExpenses.length})</span>
+                      </button>
+
+                      <button
+                        onClick={() => setFinancialTab('products')}
+                        className={`py-1.5 rounded-lg flex flex-col items-center justify-center transition ${
+                          financialTab === 'products'
+                            ? 'bg-amber-500 text-slate-950 font-black'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <span>Vendido</span>
+                        <span className="text-[8px] opacity-80">({soldProductsList.length})</span>
+                      </button>
+                    </div>
+
+                    {/* Tab 1: NEQUI */}
+                    {financialTab === 'nequi' && (
+                      <div className="space-y-2">
+                        <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-xl flex items-center justify-between text-xs">
+                          <span className="text-slate-300 font-bold">Total Nequi del día:</span>
+                          <span className="font-black text-emerald-400 text-sm">{formatCOP(totalNequi)}</span>
+                        </div>
+
+                        {selectedNequiTxs.length === 0 ? (
+                          <div className="p-6 text-center text-slate-500 text-xs bg-slate-900/30 rounded-xl border border-slate-900">
+                            No hay pagos Nequi registrados en esta fecha.
+                          </div>
+                        ) : (
+                          selectedNequiTxs.map(tx => (
+                            <div
+                              key={tx.id}
+                              onClick={() => setInspectingNequiTx(tx)}
+                              className="p-3 bg-slate-900/90 border border-slate-800 hover:border-amber-500/40 rounded-xl cursor-pointer transition space-y-1.5"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center space-x-1.5">
+                                  <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 font-bold text-[9px]">
+                                    {tx.nequiChannel || 'Nequi'}
+                                  </span>
+                                  <span className="text-xs font-bold text-white">{tx.payerNameOrPhone}</span>
+                                </div>
+                                <span className="font-black text-emerald-400 text-xs">{formatCOP(tx.amount)}</span>
+                              </div>
+
+                              <div className="flex items-center justify-between text-[10px] text-slate-400">
+                                <span>Hora: {tx.time}</span>
+                                {tx.bankTransactionRef ? (
+                                  <span className="text-amber-400 font-mono">Ref: {tx.bankTransactionRef}</span>
+                                ) : (
+                                  <span className="text-amber-400/90 italic font-semibold">
+                                    No disponible en el SMS
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex items-center justify-between text-[9px] text-slate-500 pt-1 border-t border-slate-800/60">
+                                <span>SMS ID: {tx.smsEventId || 'N/A'}</span>
+                                <span className="text-cyan-400 font-semibold">{tx.originInstallation}</span>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+
+                    {/* Tab 2: EFECTIVO */}
+                    {financialTab === 'cash' && (
+                      <div className="space-y-2">
+                        <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-xl flex items-center justify-between text-xs">
+                          <span className="text-slate-300 font-bold">Total Efectivo del día:</span>
+                          <span className="font-black text-amber-400 text-sm">{formatCOP(totalCash)}</span>
+                        </div>
+
+                        {selectedCashTxs.length === 0 ? (
+                          <div className="p-6 text-center text-slate-500 text-xs bg-slate-900/30 rounded-xl border border-slate-900">
+                            No hay movimientos en efectivo en esta fecha.
+                          </div>
+                        ) : (
+                          selectedCashTxs.map(tx => (
+                            <div
+                              key={tx.id}
+                              className="p-3 bg-slate-900/90 border border-slate-800 rounded-xl space-y-1"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center space-x-1.5">
+                                  <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold text-[9px]">
+                                    {tx.entryType === 'MANUAL_CASH_IN' ? 'Ingreso Fondo' : 'Venta POS'}
+                                  </span>
+                                  {tx.saleNumber && (
+                                    <span className="text-[11px] font-bold text-white font-mono">{tx.saleNumber}</span>
+                                  )}
+                                </div>
+                                <span className="font-black text-amber-400 text-xs">{formatCOP(tx.amount)}</span>
+                              </div>
+
+                              <div className="flex items-center justify-between text-[10px] text-slate-400">
+                                <span>Cajera: {tx.cashierName}</span>
+                                <span>Hora: {tx.time}</span>
+                              </div>
+
+                              {tx.notes && (
+                                <p className="text-[10px] text-slate-400 italic pt-1 border-t border-slate-800/60">
+                                  Nota: {tx.notes}
+                                </p>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+
+                    {/* Tab 3: GASTOS */}
+                    {financialTab === 'expenses' && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-xl flex-1 flex items-center justify-between text-xs mr-2">
+                            <span className="text-slate-300 font-bold">Total Gastos:</span>
+                            <span className="font-black text-rose-400 text-sm">{formatCOP(totalExpenses)}</span>
+                          </div>
+                          <button
+                            onClick={() => {
+                              setNewExpenseAmount('');
+                              setNewExpenseDesc('');
+                              setNewExpenseNotes('');
+                              setNewExpenseCategory('Insumos');
+                              setNewExpenseSource('Caja efectivo');
+                              setNewExpenseLinkedInventory(false);
+                              setShowNewExpenseModal(true);
+                            }}
+                            className="px-3 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-xl flex items-center space-x-1 shadow-md shadow-amber-500/20 cursor-pointer"
+                          >
+                            <Plus className="w-4 h-4" />
+                            <span>Gasto</span>
+                          </button>
+                        </div>
+
+                        {dayExpenses.length === 0 ? (
+                          <div className="p-6 text-center text-slate-500 text-xs bg-slate-900/30 rounded-xl border border-slate-900">
+                            No hay gastos registrados en esta fecha.
+                          </div>
+                        ) : (
+                          dayExpenses.map(exp => (
+                            <div
+                              key={exp.id}
+                              className={`p-3 bg-slate-900/90 border rounded-xl space-y-1.5 ${
+                                exp.status === 'ANULLED'
+                                  ? 'border-slate-800/40 opacity-60'
+                                  : 'border-slate-800'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center space-x-1.5">
+                                  <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold text-[9px]">
+                                    {exp.category}
+                                  </span>
+                                  {exp.status === 'ANULLED' ? (
+                                    <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-bold text-[9px] line-through">
+                                      ANULADO
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] text-slate-400">Origen: {exp.paymentSource}</span>
+                                  )}
+                                </div>
+                                <span
+                                  className={`font-black text-xs ${
+                                    exp.status === 'ANULLED' ? 'text-slate-500 line-through' : 'text-rose-400'
+                                  }`}
+                                >
+                                  {formatCOP(exp.amount)}
+                                </span>
+                              </div>
+
+                              <p className="text-xs text-white font-medium">{exp.description}</p>
+
+                              <div className="flex items-center justify-between text-[10px] text-slate-400">
+                                <span>Por: {exp.cashierName}</span>
+                                <span>Hora: {exp.time}</span>
+                              </div>
+
+                              {exp.isLinkedToInventory && (
+                                <span className="inline-block px-1.5 py-0.2 rounded bg-cyan-500/10 text-cyan-300 text-[8px] font-semibold">
+                                  ✓ Vinculado a inventario
+                                </span>
+                              )}
+
+                              {exp.status === 'ANULLED' && exp.annulReason && (
+                                <p className="text-[9px] text-rose-400 italic pt-1 border-t border-slate-800/60">
+                                  Motivo de anulación: {exp.annulReason}
+                                </p>
+                              )}
+
+                              {exp.status === 'ACTIVE' && (
+                                <div className="pt-1.5 border-t border-slate-800/60 flex justify-end">
+                                  <button
+                                    onClick={() => {
+                                      setExpenseToAnnul(exp);
+                                      setAnnulReason('');
+                                    }}
+                                    className="px-2 py-0.5 text-[9px] font-bold text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 rounded-md border border-rose-500/30"
+                                  >
+                                    Anular Gasto
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+
+                    {/* Tab 4: LO QUE SE VENDIÓ ESE DÍA */}
+                    {financialTab === 'products' && (
+                      <div className="space-y-2">
+                        <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-xl flex items-center justify-between text-xs">
+                          <span className="text-slate-300 font-bold">Productos Vendidos:</span>
+                          <span className="font-bold text-amber-400 text-xs">
+                            {soldProductsList.reduce((acc, p) => acc + p.totalQty, 0)} unidades en {matchingSales.length} ventas
+                          </span>
+                        </div>
+
+                        {soldProductsList.length === 0 ? (
+                          <div className="p-6 text-center text-slate-500 text-xs bg-slate-900/30 rounded-xl border border-slate-900">
+                            No hay productos registrados en las ventas de esta fecha.
+                          </div>
+                        ) : (
+                          soldProductsList.map(prodSummary => (
+                            <div
+                              key={prodSummary.productId}
+                              onClick={() => setInspectingProductItem(prodSummary)}
+                              className="p-3 bg-slate-900/90 border border-slate-800 hover:border-amber-500/40 rounded-xl cursor-pointer transition flex items-center justify-between"
+                            >
+                              <div>
+                                <span className="font-bold text-white text-xs block">{prodSummary.productName}</span>
+                                <span className="text-[10px] text-slate-400 mt-0.5 block">
+                                  {prodSummary.totalQty} und. vendidas • Precio base: {formatCOP(prodSummary.unitPrice)}
+                                </span>
+                                <span className="text-[9px] text-amber-400/90 font-medium mt-0.5 block">
+                                  Aparece en {prodSummary.salesCount} recibo(s) (Toca para ver detalle)
+                                </span>
+                              </div>
+                              <div className="text-right">
+                                <span className="font-black text-emerald-400 text-xs block">
+                                  {formatCOP(prodSummary.totalRevenue)}
+                                </span>
+                                <span className="text-[9px] text-slate-500 block">Subtotal</span>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+
+                    {/* ============================================================== */}
+                    {/* MODAL: AUDITORÍA DE PAGO NEQUI (CON "No disponible en el SMS") */}
+                    {/* ============================================================== */}
+                    {inspectingNequiTx && (
+                      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+                        <div className="w-full max-w-sm bg-slate-950 border border-amber-500/40 rounded-2xl p-4 space-y-3 shadow-2xl">
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                            <div className="flex items-center space-x-2">
+                              <div className="w-7 h-7 rounded-lg bg-purple-500/20 text-purple-300 flex items-center justify-center font-bold text-xs">
+                                N
+                              </div>
+                              <span className="font-black text-sm text-white">Auditoría Pago Nequi</span>
+                            </div>
+                            <button
+                              onClick={() => setInspectingNequiTx(null)}
+                              className="p-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 text-center">
+                            <span className="text-[10px] text-slate-400 block">Monto Acreditado</span>
+                            <span className="text-xl font-black text-emerald-400 block mt-0.5">
+                              {formatCOP(inspectingNequiTx.amount)}
+                            </span>
+                            <span className="text-[9px] text-purple-300 font-bold block mt-0.5">
+                              {inspectingNequiTx.nequiChannel || 'App Nequi'}
                             </span>
                           </div>
-                          {sale.nequiSenderName && (
-                            <span className="text-[10px] text-amber-300 block mt-0.5">
-                              De: {sale.nequiSenderName}
-                            </span>
-                          )}
-                          <span className="text-[9px] text-slate-500">{sale.timestamp}</span>
+
+                          <div className="space-y-2 text-xs">
+                            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                              <span className="text-[10px] text-slate-400 block">Referencia Bancaria Nequi:</span>
+                              {inspectingNequiTx.bankTransactionRef ? (
+                                <span className="font-mono font-bold text-amber-300 text-sm">
+                                  {inspectingNequiTx.bankTransactionRef}
+                                </span>
+                              ) : (
+                                <div className="px-2 py-1 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 font-bold italic text-xs">
+                                  No disponible en el SMS
+                                </div>
+                              )}
+                              <p className="text-[9px] text-slate-500 mt-1">
+                                Diferenciada estrictamente del identificador de evento SMS.
+                              </p>
+                            </div>
+
+                            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                              <span className="text-[10px] text-slate-400 block">Remitente:</span>
+                              <span className="font-bold text-white text-xs">{inspectingNequiTx.payerNameOrPhone}</span>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
+                                <span className="text-[9px] text-slate-400 block">ID Evento SMS</span>
+                                <span className="font-mono text-[10px] text-slate-200 block truncate">
+                                  {inspectingNequiTx.smsEventId || 'SMS-DIRECT-01'}
+                                </span>
+                              </div>
+                              <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
+                                <span className="text-[9px] text-slate-400 block">Hora y Fecha</span>
+                                <span className="text-[10px] text-slate-200 block truncate">
+                                  {inspectingNequiTx.time} ({inspectingNequiTx.dateStr})
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                              <span className="text-[10px] text-slate-400 block">Instalación / Origen:</span>
+                              <span className="text-xs font-bold text-cyan-400">{inspectingNequiTx.originInstallation}</span>
+                            </div>
+
+                            {inspectingNequiTx.saleNumber && (
+                              <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex justify-between items-center">
+                                <span className="text-[10px] text-slate-400">Recibo de Venta Asociado:</span>
+                                <span className="text-xs font-black text-white font-mono">{inspectingNequiTx.saleNumber}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          <button
+                            onClick={() => setInspectingNequiTx(null)}
+                            className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl"
+                          >
+                            Cerrar Auditoría
+                          </button>
                         </div>
-                        <span className="font-black text-amber-400 text-xs">{formatCOP(sale.total)}</span>
                       </div>
-                    ))}
+                    )}
+
+                    {/* ============================================================== */}
+                    {/* MODAL: DETALLE DE OCURRENCIAS DE PRODUCTO VENDIDO              */}
+                    {/* ============================================================== */}
+                    {inspectingProductItem && (
+                      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+                        <div className="w-full max-w-sm bg-slate-950 border border-amber-500/40 rounded-2xl p-4 space-y-3 shadow-2xl">
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                            <div>
+                              <h3 className="font-black text-sm text-white">{inspectingProductItem.productName}</h3>
+                              <p className="text-[10px] text-slate-400">
+                                {inspectingProductItem.totalQty} unidades vendidas el {selectedCalendarDate}
+                              </p>
+                            </div>
+                            <button
+                              onClick={() => setInspectingProductItem(null)}
+                              className="p-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex justify-between items-center text-xs">
+                            <span className="text-slate-300">Total Generado:</span>
+                            <span className="font-black text-emerald-400 text-sm">
+                              {formatCOP(inspectingProductItem.totalRevenue)}
+                            </span>
+                          </div>
+
+                          <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                              Recibos de venta con este producto:
+                            </span>
+                            {inspectingProductItem.occurrences.map((occ: any, i: number) => (
+                              <div
+                                key={i}
+                                className="p-2.5 bg-slate-900/90 border border-slate-800 rounded-xl flex items-center justify-between text-xs"
+                              >
+                                <div>
+                                  <div className="flex items-center space-x-1.5">
+                                    <span className="font-mono font-bold text-white text-[11px]">{occ.saleNumber}</span>
+                                    <span className="text-[9px] text-slate-400">({occ.time})</span>
+                                  </div>
+                                  <span className="text-[9px] text-slate-400 block mt-0.5">
+                                    Cajera: {occ.cashier} • {occ.quantity} und.
+                                  </span>
+                                </div>
+                                <span className="font-bold text-amber-400 text-xs">{formatCOP(occ.total)}</span>
+                              </div>
+                            ))}
+                          </div>
+
+                          <button
+                            onClick={() => setInspectingProductItem(null)}
+                            className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl"
+                          >
+                            Cerrar
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ============================================================== */}
+                    {/* MODAL: REGISTRAR GASTO DEL DÍA                                */}
+                    {/* ============================================================== */}
+                    {showNewExpenseModal && (
+                      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+                        <div className="w-full max-w-sm bg-slate-950 border border-amber-500/40 rounded-2xl p-4 space-y-3 shadow-2xl">
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                            <span className="font-black text-sm text-white">Registrar Gasto del Día</span>
+                            <button
+                              onClick={() => setShowNewExpenseModal(false)}
+                              className="p-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          <div className="space-y-2 text-xs">
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">Monto en COP *</label>
+                              <input
+                                type="number"
+                                placeholder="Ej. 25000"
+                                value={newExpenseAmount}
+                                onChange={e => setNewExpenseAmount(e.target.value)}
+                                className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-white font-bold text-sm focus:border-amber-500 outline-none"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">Categoría de Gasto *</label>
+                              <select
+                                value={newExpenseCategory}
+                                onChange={e => setNewExpenseCategory(e.target.value)}
+                                className="w-full p-2 rounded-xl bg-slate-900 border border-slate-800 text-white text-xs outline-none focus:border-amber-500"
+                              >
+                                <option value="Insumos">Insumos (Leche, Frutas, Azúcar)</option>
+                                <option value="Reposición inventario">Reposición inventario (Vasos, Barquillos)</option>
+                                <option value="Transporte">Transporte / Domicilios</option>
+                                <option value="Servicios">Servicios (Luz, Agua, Internet)</option>
+                                <option value="Mantenimiento">Mantenimiento de Máquinas</option>
+                                <option value="Otros">Otros</option>
+                              </select>
+                            </div>
+
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">Descripción del Gasto *</label>
+                              <input
+                                type="text"
+                                placeholder="Ej. Compra de 6 bolsas de leche entera"
+                                value={newExpenseDesc}
+                                onChange={e => setNewExpenseDesc(e.target.value)}
+                                className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-white text-xs focus:border-amber-500 outline-none"
+                              />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-1">Origen de Pago</label>
+                                <select
+                                  value={newExpenseSource}
+                                  onChange={e => setNewExpenseSource(e.target.value)}
+                                  className="w-full p-2 rounded-xl bg-slate-900 border border-slate-800 text-white text-xs outline-none focus:border-amber-500"
+                                >
+                                  <option value="Caja efectivo">Caja efectivo</option>
+                                  <option value="Nequi">Nequi</option>
+                                  <option value="Otro">Otro</option>
+                                </select>
+                              </div>
+
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-1">Cajera Responsable</label>
+                                <input
+                                  type="text"
+                                  value={activeCashier.name}
+                                  disabled
+                                  className="w-full p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 text-xs"
+                                />
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">Notas / Factura (Opcional)</label>
+                              <input
+                                type="text"
+                                placeholder="Ej. Factura proveedora #412"
+                                value={newExpenseNotes}
+                                onChange={e => setNewExpenseNotes(e.target.value)}
+                                className="w-full p-2 rounded-xl bg-slate-900 border border-slate-800 text-white text-xs focus:border-amber-500 outline-none"
+                              />
+                            </div>
+
+                            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center space-x-2">
+                              <input
+                                type="checkbox"
+                                id="chk-linked-inv"
+                                checked={newExpenseLinkedInventory}
+                                onChange={e => setNewExpenseLinkedInventory(e.target.checked)}
+                                className="w-4 h-4 accent-amber-500 rounded"
+                              />
+                              <label htmlFor="chk-linked-inv" className="text-[11px] text-slate-300 leading-tight">
+                                Este gasto corresponde a reposición de inventario físico (no duplicar en costos)
+                              </label>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center space-x-2 pt-2">
+                            <button
+                              onClick={() => setShowNewExpenseModal(false)}
+                              className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl"
+                            >
+                              Cancelar
+                            </button>
+                            <button
+                              onClick={() => {
+                                const parsedAmt = parseFloat(newExpenseAmount);
+                                if (isNaN(parsedAmt) || parsedAmt <= 0) {
+                                  alert('Por favor ingresa un monto válido mayor a 0');
+                                  return;
+                                }
+                                if (!newExpenseDesc.trim()) {
+                                  alert('La descripción del gasto es obligatoria');
+                                  return;
+                                }
+
+                                const now = new Date();
+                                const timeStr = now.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+
+                                const newExp = {
+                                  id: `exp-${Date.now()}`,
+                                  amount: parsedAmt,
+                                  category: newExpenseCategory,
+                                  description: newExpenseDesc.trim(),
+                                  paymentSource: newExpenseSource,
+                                  cashierName: activeCashier.name,
+                                  notes: newExpenseNotes.trim(),
+                                  dateStr: selectedCalendarDate,
+                                  time: timeStr,
+                                  isLinkedToInventory: newExpenseLinkedInventory,
+                                  status: 'ACTIVE'
+                                };
+
+                                setFinancialExpenses(prev => [newExp, ...prev]);
+
+                                // If from Cash, deduct from Cash Shift
+                                if (newExpenseSource === 'Caja efectivo') {
+                                  setCashShift(prev => ({
+                                    ...prev,
+                                    cashOut: prev.cashOut + parsedAmt,
+                                    expenses: [
+                                      ...prev.expenses,
+                                      {
+                                        id: `exp-shift-${Date.now()}`,
+                                        concept: newExpenseDesc.trim(),
+                                        amount: parsedAmt,
+                                        time: timeStr
+                                      }
+                                    ]
+                                  }));
+                                }
+
+                                setShowNewExpenseModal(false);
+                              }}
+                              className="flex-1 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-xl shadow-md shadow-amber-500/20"
+                            >
+                              Guardar Gasto
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ============================================================== */}
+                    {/* MODAL: ANULAR GASTO (CON MOTIVO OBLIGATORIO)                   */}
+                    {/* ============================================================== */}
+                    {expenseToAnnul && (
+                      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+                        <div className="w-full max-w-sm bg-slate-950 border border-rose-500/40 rounded-2xl p-4 space-y-3 shadow-2xl">
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                            <span className="font-black text-sm text-white">Anular Gasto</span>
+                            <button
+                              onClick={() => setExpenseToAnnul(null)}
+                              className="p-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1 text-xs">
+                            <span className="text-slate-400 text-[10px] block">Gasto a anular:</span>
+                            <p className="text-white font-bold">{expenseToAnnul.description}</p>
+                            <span className="text-rose-400 font-black text-sm block">
+                              {formatCOP(expenseToAnnul.amount)}
+                            </span>
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-1">
+                              Motivo de anulación (Obligatorio) *
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="Ej. Registro duplicado por error"
+                              value={annulReason}
+                              onChange={e => setAnnulReason(e.target.value)}
+                              className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-white text-xs focus:border-rose-500 outline-none"
+                            />
+                          </div>
+
+                          <div className="flex items-center space-x-2 pt-2">
+                            <button
+                              onClick={() => setExpenseToAnnul(null)}
+                              className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl"
+                            >
+                              Volver
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (!annulReason.trim()) {
+                                  alert('Debes indicar el motivo de la anulación.');
+                                  return;
+                                }
+                                setFinancialExpenses(prev =>
+                                  prev.map(e =>
+                                    e.id === expenseToAnnul.id
+                                      ? {
+                                          ...e,
+                                          status: 'ANULLED',
+                                          annulReason: annulReason.trim(),
+                                          annulledAt: new Date().toISOString()
+                                        }
+                                      : e
+                                  )
+                                );
+                                setExpenseToAnnul(null);
+                              }}
+                              className="flex-1 py-2 bg-rose-600 hover:bg-rose-500 text-white font-black text-xs rounded-xl"
+                            >
+                              Confirmar Anulación
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* ============================================================== */}
               {/* SUB-SECTION: CÓDIGO ANDROID & ZIP EXPORT                      */}
@@ -2664,6 +4338,1407 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* ============================================================== */}
+      {/* MODAL 1: EDIT CASHIER NAME & MANAGE PROFILES                   */}
+      {/* ============================================================== */}
+      {showCashierModal && (
+        <CashierManagementModal
+          activeCashier={activeCashier}
+          cashiers={cashiers}
+          onSaveActiveName={(newName) => {
+            const trimmed = newName.trim();
+            if (!trimmed) return 'El nombre de la cajera no puede estar vacío.';
+            const updated = { ...activeCashier, name: trimmed };
+            setActiveCashier(updated);
+            setCashiers(prev => prev.map(c => c.id === activeCashier.id ? updated : c));
+            setCashShift(prev => ({ ...prev, cashierName: trimmed }));
+            setShowCashierModal(false);
+            return null;
+          }}
+          onSelectProfile={(profile) => {
+            setActiveCashier(profile);
+            setCashShift(prev => ({ ...prev, cashierName: profile.name }));
+            setShowCashierModal(false);
+          }}
+          onCreateProfile={(name) => {
+            const trimmed = name.trim();
+            if (!trimmed) return 'El nombre de la cajera no puede estar vacío.';
+            const newProfile: CashierProfile = { id: `cashier-${Date.now()}`, name: trimmed, isActive: true };
+            setCashiers(prev => [...prev, newProfile]);
+            setActiveCashier(newProfile);
+            setCashShift(prev => ({ ...prev, cashierName: trimmed }));
+            setShowCashierModal(false);
+            return null;
+          }}
+          onClose={() => setShowCashierModal(false)}
+        />
+      )}
+
+      {/* ============================================================== */}
+      {/* MODAL 2: PRODUCT MANAGEMENT (CRUD & PHOTO PICKER)              */}
+      {/* ============================================================== */}
+      {showProductAdminModal && (
+        <ProductManagementModal
+          products={products}
+          categories={categories}
+          ingredients={ingredients}
+          isOwner={currentRole === 'OWNER'}
+          onSaveProduct={(productData) => {
+            if (productData.id) {
+              setProducts(prev => prev.map(p => p.id === productData.id ? { ...p, ...productData, updatedAt: Date.now() } : p));
+            } else {
+              const newProd: Product = {
+                ...productData,
+                id: `prod-${Date.now()}`,
+                variants: [
+                  { id: 'var-1', name: 'Unidad', priceDelta: 0, weightGrams: 100 }
+                ],
+                allowedToppings: true,
+                createdAt: Date.now(),
+                updatedAt: Date.now()
+              } as Product;
+              setProducts(prev => [...prev, newProd]);
+            }
+          }}
+          onDeleteProduct={(productId) => {
+            setProducts(prev => prev.filter(p => p.id !== productId));
+          }}
+          onAddIngredient={(newIng) => {
+            setIngredients(prev => [...prev, newIng]);
+          }}
+          onClose={() => setShowProductAdminModal(false)}
+        />
+      )}
+
+      {/* ============================================================== */}
+      {/* MODAL 3: CATEGORY MANAGEMENT (SAFE REASSIGN & DELETE)          */}
+      {/* ============================================================== */}
+      {showCategoryAdminModal && (
+        <CategoryManagementModal
+          categories={categories}
+          products={products}
+          onCreateCategory={(name, emoji) => {
+            const trimmed = name.trim();
+            if (!trimmed) return 'El nombre de la categoría no puede estar vacío.';
+            const newCat: CategoryItem = {
+              id: `cat-${Date.now()}`,
+              name: trimmed,
+              emoji: emoji || '🍦',
+              isActive: true,
+              displayOrder: categories.length
+            };
+            setCategories(prev => [...prev, newCat]);
+            return null;
+          }}
+          onUpdateCategory={(id, name, emoji) => {
+            const trimmed = name.trim();
+            if (!trimmed) return 'El nombre de la categoría no puede estar vacío.';
+            setCategories(prev => prev.map(c => c.id === id ? { ...c, name: trimmed, emoji } : c));
+            return null;
+          }}
+          onDeleteCategory={(catId, reassignToCatId) => {
+            if (categories.length <= 1) return 'No se puede eliminar la única categoría existente.';
+            if (catId === reassignToCatId) return 'La categoría de reasignación debe ser diferente.';
+
+            // Reassign products safely without dropping them
+            setProducts(prev => prev.map(p => p.categoryId === catId ? { ...p, categoryId: reassignToCatId, updatedAt: Date.now() } : p));
+            setCategories(prev => prev.filter(c => c.id !== catId));
+            return null;
+          }}
+          onClose={() => setShowCategoryAdminModal(false)}
+        />
+      )}
+
+      {/* ============================================================== */}
+      {/* MODAL 4: INVENTORY ADJUSTMENT & AUDIT MOVEMENTS                */}
+      {/* ============================================================== */}
+      {showStockAdminModal && (
+        <StockAuditModal
+          products={products}
+          movements={inventoryMovements}
+          auditorName={activeCashier.name}
+          onAdjustStock={(productId, newStock, reason, type) => {
+            const trimmedReason = reason.trim();
+            if (!trimmedReason) return 'El motivo del ajuste es obligatorio.';
+            if (newStock < 0) return 'El inventario resultante no puede ser negativo.';
+
+            const targetProd = products.find(p => p.id === productId);
+            if (!targetProd) return 'Producto no encontrado.';
+
+            const prevStock = targetProd.stockQuantity;
+            const change = newStock - prevStock;
+
+            setProducts(prev => prev.map(p => p.id === productId ? { ...p, stockQuantity: newStock, updatedAt: Date.now() } : p));
+
+            const mov: InventoryMovement = {
+              id: `mov-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+              productId: targetProd.id,
+              productName: targetProd.name,
+              previousStock: prevStock,
+              change,
+              resultingStock: newStock,
+              type,
+              reason: trimmedReason,
+              dateFormatted: new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }),
+              userName: activeCashier.name
+            };
+
+            setInventoryMovements(prev => [mov, ...prev]);
+            return null;
+          }}
+          onClose={() => setShowStockAdminModal(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
+// SUB-COMPONENTS: ADMINISTRATIVE MODALS
+// =============================================================================
+
+function CashierManagementModal({
+  activeCashier,
+  cashiers,
+  onSaveActiveName,
+  onSelectProfile,
+  onCreateProfile,
+  onClose
+}: {
+  activeCashier: CashierProfile;
+  cashiers: CashierProfile[];
+  onSaveActiveName: (name: string) => string | null;
+  onSelectProfile: (profile: CashierProfile) => void;
+  onCreateProfile: (name: string) => string | null;
+  onClose: () => void;
+}) {
+  const [nameInput, setNameInput] = useState(activeCashier.name);
+  const [isCreating, setIsCreating] = useState(false);
+  const [newProfileName, setNewProfileName] = useState('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="w-full max-w-md bg-[#0B1224] border border-slate-800 rounded-t-[32px] sm:rounded-3xl p-5 shadow-2xl flex flex-col space-y-4 animate-in slide-in-from-bottom duration-200">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Users className="w-5 h-5 text-amber-400" />
+            <h3 className="font-black text-sm text-white">
+              {isCreating ? 'Agregar Nueva Cajera' : 'Administrar Cajeras'}
+            </h3>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-slate-800 text-slate-400 rounded-lg">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {errorMsg && (
+          <div className="p-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-xs font-semibold">
+            {errorMsg}
+          </div>
+        )}
+
+        {!isCreating ? (
+          <div className="space-y-4">
+            <div>
+              <label className="text-[11px] text-slate-400 block mb-1">Nombre de la cajera activa en turno:</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={nameInput}
+                  onChange={e => {
+                    setNameInput(e.target.value);
+                    setErrorMsg(null);
+                  }}
+                  className="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-400"
+                />
+                <button
+                  onClick={() => {
+                    const err = onSaveActiveName(nameInput);
+                    if (err) setErrorMsg(err);
+                  }}
+                  className="px-4 py-2 bg-amber-500 text-slate-950 font-bold text-xs rounded-xl shadow cursor-pointer"
+                >
+                  Guardar
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-500 mt-1">Este nombre se imprime en recibos y auditorías de caja.</p>
+            </div>
+
+            <div>
+              <span className="text-[11px] font-bold text-amber-400 block mb-2 uppercase tracking-wide">
+                Perfiles de cajeras registrados:
+              </span>
+              <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                {cashiers.map(c => {
+                  const isActive = c.id === activeCashier.id;
+                  return (
+                    <div
+                      key={c.id}
+                      onClick={() => onSelectProfile(c)}
+                      className={`p-2.5 rounded-xl border flex items-center justify-between text-xs cursor-pointer transition ${
+                        isActive
+                          ? 'bg-amber-500/15 border-amber-500/50 text-white'
+                          : 'bg-slate-950/70 border-slate-800 text-slate-300 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                        <span className="font-semibold">{c.name}</span>
+                      </div>
+                      {isActive && (
+                        <span className="text-[10px] font-bold text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-md">
+                          En Turno
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                setIsCreating(true);
+                setNewProfileName('');
+                setErrorMsg(null);
+              }}
+              className="w-full py-2.5 bg-slate-900 border border-slate-800 text-slate-300 hover:text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5 text-amber-400" />
+              <span>+ Agregar Nuevo Perfil</span>
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div>
+              <label className="text-[11px] text-slate-400 block mb-1">Nombre completo de la cajera:</label>
+              <input
+                type="text"
+                placeholder="Ej. Valentina Ortiz"
+                value={newProfileName}
+                onChange={e => {
+                  setNewProfileName(e.target.value);
+                  setErrorMsg(null);
+                }}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-400"
+              />
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={() => setIsCreating(false)}
+                className="flex-1 py-2.5 bg-slate-900 border border-slate-800 text-slate-400 font-bold text-xs rounded-xl"
+              >
+                Volver
+              </button>
+              <button
+                onClick={() => {
+                  const err = onCreateProfile(newProfileName);
+                  if (err) setErrorMsg(err);
+                }}
+                className="flex-1 py-2.5 bg-amber-500 text-slate-950 font-black text-xs rounded-xl shadow cursor-pointer"
+              >
+                Crear Perfil
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProductManagementModal({
+  products,
+  categories,
+  ingredients,
+  isOwner,
+  onSaveProduct,
+  onDeleteProduct,
+  onAddIngredient,
+  onClose
+}: {
+  products: Product[];
+  categories: CategoryItem[];
+  ingredients: Ingredient[];
+  isOwner: boolean;
+  onSaveProduct: (data: Partial<Product>) => void;
+  onDeleteProduct: (id: string) => void;
+  onAddIngredient?: (ingredient: Ingredient) => void;
+  onClose: () => void;
+}) {
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const [search, setSearch] = useState('');
+  const [catFilter, setCatFilter] = useState('todos');
+
+  // Form states
+  const [name, setName] = useState('');
+  const [basePrice, setBasePrice] = useState('');
+  const [baseCost, setBaseCost] = useState('');
+  const [categoryId, setCategoryId] = useState(categories[0]?.id || 'helados');
+  const [description, setDescription] = useState('');
+  const [stockQuantity, setStockQuantity] = useState('10');
+  const [unit, setUnit] = useState('unidades');
+  const [minStockAlert, setMinStockAlert] = useState('5');
+  const [isActive, setIsActive] = useState(true);
+  const [emoji, setEmoji] = useState('🍨');
+  const [imagePath, setImagePath] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Recipe & Combo states
+  const [isCombo, setIsCombo] = useState(false);
+  const [recipe, setRecipe] = useState<RecipeItem[]>([]);
+  const [comboItems, setComboItems] = useState<ComboItem[]>([]);
+  const [allowNegativeStock, setAllowNegativeStock] = useState(false);
+
+  // Helpers
+  const [addIngId, setAddIngId] = useState(ingredients[0]?.id || '');
+  const [addIngQty, setAddIngQty] = useState('100');
+  const [addIngUnit, setAddIngUnit] = useState('g');
+  const [addComboChildId, setAddComboChildId] = useState('');
+
+  // Cuadrito para agregar nuevo insumo al local
+  const [newIngName, setNewIngName] = useState('');
+  const [newIngUnit, setNewIngUnit] = useState<'g' | 'kg' | 'ml' | 'unidades'>('g');
+  const [newIngCost, setNewIngCost] = useState('');
+  const [newIngStock, setNewIngStock] = useState('1000');
+  const [newIngCategory, setNewIngCategory] = useState('Insumos');
+  const [newIngSuccessMsg, setNewIngSuccessMsg] = useState<string | null>(null);
+
+  const handleAddNewIngredient = () => {
+    if (!newIngName.trim()) return;
+    const created: Ingredient = {
+      id: `ing-${Date.now()}`,
+      name: newIngName.trim(),
+      category: newIngCategory,
+      unit: newIngUnit,
+      currentStock: parseFloat(newIngStock) || 0,
+      minStockAlert: 50,
+      unitCostCOP: parseFloat(newIngCost) || 0,
+      batchCode: `LOTE-${new Date().getFullYear()}`,
+      expiryDate: ''
+    };
+
+    if (onAddIngredient) {
+      onAddIngredient(created);
+    }
+    setAddIngId(created.id);
+    setAddIngUnit(created.unit);
+    setNewIngName('');
+    setNewIngCost('');
+    setNewIngSuccessMsg(`¡Insumo "${created.name}" registrado con éxito!`);
+    setTimeout(() => setNewIngSuccessMsg(null), 3000);
+  };
+
+  const calculateRecipeCost = (rec: RecipeItem[]): number => {
+    return rec.reduce((acc, r) => {
+      const ing = ingredients.find(i => i.id === r.ingredientId);
+      if (!ing) return acc;
+      try {
+        const converted = UnitConverter.convert(r.quantity, r.unit, ing.unit);
+        return acc + (converted * ing.unitCostCOP);
+      } catch {
+        return acc + (r.quantity * ing.unitCostCOP);
+      }
+    }, 0);
+  };
+
+  const startEdit = (p: Product) => {
+    setEditingProduct(p);
+    setIsCreating(false);
+    setName(p.name);
+    setBasePrice(p.basePrice.toString());
+    setBaseCost(p.baseCost !== undefined ? p.baseCost.toString() : '');
+    setCategoryId(p.categoryId);
+    setDescription(p.description || '');
+    setStockQuantity(p.stockQuantity.toString());
+    setUnit(p.unit || 'unidades');
+    setMinStockAlert(p.minStockAlert.toString());
+    setIsActive(p.isActive);
+    setEmoji(p.emoji);
+    setImagePath(p.imagePath || null);
+    setIsCombo(p.isCombo || false);
+    setRecipe(p.recipe || []);
+    setComboItems(p.comboItems || []);
+    setAllowNegativeStock(p.allowNegativeStock || false);
+    setError(null);
+  };
+
+  const startCreate = () => {
+    setEditingProduct(null);
+    setIsCreating(true);
+    setName('');
+    setBasePrice('');
+    setBaseCost('');
+    setCategoryId(categories[0]?.id || 'helados');
+    setDescription('');
+    setStockQuantity('15');
+    setUnit('unidades');
+    setMinStockAlert('5');
+    setIsActive(true);
+    setEmoji('🍨');
+    setImagePath(null);
+    setIsCombo(false);
+    setRecipe([]);
+    setComboItems([]);
+    setAllowNegativeStock(false);
+    setError(null);
+  };
+
+  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setImagePath(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleSave = () => {
+    if (!name.trim()) {
+      setError('El nombre del producto es obligatorio.');
+      return;
+    }
+    const priceNum = parseInt(basePrice, 10);
+    if (isNaN(priceNum) || priceNum < 0) {
+      setError('Ingresa un precio válido.');
+      return;
+    }
+    const parsedCost = parseInt(baseCost, 10);
+    const costNum = !isNaN(parsedCost) ? parsedCost : 0;
+    const stockNum = parseFloat(stockQuantity) || 0;
+    const minAlertNum = parseFloat(minStockAlert) || 5;
+
+    // Circular check for combo
+    if (isCombo && editingProduct) {
+      if (comboItems.some(ci => ci.productId === editingProduct.id)) {
+        setError('Referencia circular: un combo no puede contenerse a sí mismo.');
+        return;
+      }
+    }
+
+    onSaveProduct({
+      id: editingProduct?.id,
+      name: name.trim(),
+      basePrice: priceNum,
+      baseCost: costNum,
+      categoryId,
+      description: description.trim(),
+      stockQuantity: stockNum,
+      unit,
+      minStockAlert: minAlertNum,
+      isActive,
+      emoji,
+      imagePath,
+      isCombo,
+      recipe,
+      comboItems,
+      allowNegativeStock
+    });
+
+    setEditingProduct(null);
+    setIsCreating(false);
+  };
+
+  const filtered = products.filter(p => {
+    const matchCat = catFilter === 'todos' || p.categoryId === catFilter;
+    const matchQuery = p.name.toLowerCase().includes(search.toLowerCase());
+    return matchCat && matchQuery;
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="w-full max-w-md bg-[#0B1224] border border-slate-800 rounded-t-[32px] sm:rounded-3xl p-5 shadow-2xl flex flex-col max-h-[90vh] animate-in slide-in-from-bottom duration-200">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+          <div className="flex items-center space-x-2">
+            <Boxes className="w-5 h-5 text-amber-400" />
+            <h3 className="font-black text-sm text-white">
+              {isCreating ? 'Nuevo Producto' : editingProduct ? 'Editar Producto' : 'Administrar Productos'}
+            </h3>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-slate-800 text-slate-400 rounded-lg">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {error && (
+          <div className="my-2 p-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-xs font-semibold">
+            {error}
+          </div>
+        )}
+
+        {isCreating || editingProduct ? (
+          <div className="flex-1 overflow-y-auto py-3 space-y-3 pr-1 text-xs">
+            <div>
+              <label className="text-[11px] text-slate-400 block mb-1">Nombre del Producto:</label>
+              <input
+                type="text"
+                placeholder="Ej. Helado de Maracuyá"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-amber-400"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">Precio Venta COP *:</label>
+                <input
+                  type="number"
+                  placeholder="Ej. 6500"
+                  value={basePrice}
+                  onChange={e => setBasePrice(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl font-bold text-amber-400 focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">Categoría:</label>
+                <select
+                  value={categoryId}
+                  onChange={e => setCategoryId(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-amber-400"
+                >
+                  {categories.map(c => (
+                    <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Photo Picker */}
+            <div>
+              <label className="text-[11px] text-slate-400 block mb-1">Fotografía del Producto:</label>
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden shrink-0">
+                  {imagePath ? (
+                    <img src={imagePath} alt="Preview" className="w-full h-full object-cover" />
+                  ) : (
+                    <span className="text-2xl">{emoji}</span>
+                  )}
+                </div>
+                <div className="flex-1 space-y-1">
+                  <label className="px-3 py-1.5 bg-slate-900 border border-slate-800 text-slate-200 hover:text-white rounded-lg text-xs font-semibold cursor-pointer inline-flex items-center gap-1.5">
+                    <Upload className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Subir Foto Galería</span>
+                    <input type="file" accept="image/*" onChange={handleImageFileChange} className="hidden" />
+                  </label>
+                  {imagePath && (
+                    <button
+                      type="button"
+                      onClick={() => setImagePath(null)}
+                      className="text-[10px] text-red-400 hover:text-red-300 ml-2"
+                    >
+                      Quitar foto
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[11px] text-slate-400 block mb-1">Descripción breve:</label>
+              <input
+                type="text"
+                placeholder="Ej. Sabor refrescante con frutas naturales"
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-amber-400"
+              />
+            </div>
+
+            {/* Tipo de Producto: Estándar con Receta vs Combo */}
+            <div>
+              <label className="text-[11px] text-slate-400 block mb-1">Tipo de producto:</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsCombo(false)}
+                  className={`py-2 px-3 rounded-xl border text-xs font-bold transition cursor-pointer ${
+                    !isCombo ? 'bg-amber-500 text-slate-950 border-amber-400' : 'bg-slate-950 text-slate-300 border-slate-800'
+                  }`}
+                >
+                  🍦 Individual / Receta
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsCombo(true)}
+                  className={`py-2 px-3 rounded-xl border text-xs font-bold transition cursor-pointer ${
+                    isCombo ? 'bg-amber-500 text-slate-950 border-amber-400' : 'bg-slate-950 text-slate-300 border-slate-800'
+                  }`}
+                >
+                  🎁 Combo Compuesto
+                </button>
+              </div>
+            </div>
+
+            {isCombo ? (
+              /* Sección Combo */
+              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-amber-400 text-xs">Productos en este Combo:</span>
+                  <span className="text-[10px] text-slate-400">{comboItems.length} componente(s)</span>
+                </div>
+
+                {comboItems.length === 0 ? (
+                  <p className="text-[11px] text-slate-500">Agrega productos que se descontarán automáticamente al vender este combo.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {comboItems.map((ci, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-2 bg-slate-900 rounded-lg text-xs">
+                        <span>• {ci.quantity}x {ci.productName}</span>
+                        <button
+                          type="button"
+                          onClick={() => setComboItems(prev => prev.filter((_, i) => i !== idx))}
+                          className="text-red-400 hover:text-red-300 p-0.5"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="pt-2 border-t border-slate-800 flex gap-2">
+                  <select
+                    value={addComboChildId}
+                    onChange={e => setAddComboChildId(e.target.value)}
+                    className="flex-1 px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-white"
+                  >
+                    <option value="">Seleccionar producto...</option>
+                    {products.filter(p => p.id !== editingProduct?.id && !p.isCombo).map(p => (
+                      <option key={p.id} value={p.id}>{p.name} ({formatCOP(p.basePrice)})</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const found = products.find(p => p.id === addComboChildId);
+                      if (found) {
+                        setComboItems(prev => [...prev, { productId: found.id, productName: found.name, quantity: 1 }]);
+                        setAddComboChildId('');
+                      }
+                    }}
+                    disabled={!addComboChildId}
+                    className="px-3 py-1.5 bg-amber-500 text-slate-950 font-bold rounded-lg text-xs disabled:opacity-50 cursor-pointer"
+                  >
+                    + Añadir
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Sección Receta e Insumos */
+              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-amber-400 text-xs">Composición / Receta de Insumos:</span>
+                  <span className="text-[10px] text-slate-400">Descuento de stock en ventas</span>
+                </div>
+
+                {recipe.length === 0 ? (
+                  <p className="text-[11px] text-slate-500">Sin receta: se descuenta del inventario directo del producto.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {recipe.map((r, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-2 bg-slate-900 rounded-lg text-xs">
+                        <span>• {r.ingredientName}: <strong className="text-white">{r.quantity} {r.unit}</strong></span>
+                        <button
+                          type="button"
+                          onClick={() => setRecipe(prev => prev.filter((_, i) => i !== idx))}
+                          className="text-red-400 hover:text-red-300 p-0.5"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="pt-2 border-t border-slate-800 space-y-2">
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <select
+                      value={addIngId}
+                      onChange={e => {
+                        setAddIngId(e.target.value);
+                        const ing = ingredients.find(i => i.id === e.target.value);
+                        if (ing) setAddIngUnit(ing.unit);
+                      }}
+                      className="col-span-3 px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-white"
+                    >
+                      {ingredients.map(i => (
+                        <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      placeholder="Cantidad"
+                      value={addIngQty}
+                      onChange={e => setAddIngQty(e.target.value)}
+                      className="col-span-2 px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-white"
+                    />
+                    <select
+                      value={addIngUnit}
+                      onChange={e => setAddIngUnit(e.target.value)}
+                      className="px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-white"
+                    >
+                      <option value="g">g</option>
+                      <option value="kg">kg</option>
+                      <option value="ml">ml</option>
+                      <option value="L">L</option>
+                      <option value="unidades">unidades</option>
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const found = ingredients.find(i => i.id === addIngId);
+                      const q = parseFloat(addIngQty) || 0;
+                      if (found && q > 0) {
+                        setRecipe(prev => [...prev, { ingredientId: found.id, ingredientName: found.name, quantity: q, unit: addIngUnit }]);
+                      }
+                    }}
+                    className="w-full py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-amber-400 font-bold rounded-lg text-xs cursor-pointer"
+                  >
+                    + Agregar Insumo a la Receta
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Costo del Producto (Definición manual por el usuario) */}
+            <div>
+              <label className="text-[11px] text-slate-300 font-bold block mb-1">
+                Costo del Producto (COP) *:
+              </label>
+              <input
+                type="number"
+                placeholder="Ej. 2500"
+                value={baseCost}
+                onChange={e => setBaseCost(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl font-bold text-cyan-400 focus:outline-none focus:border-amber-400"
+              />
+              <p className="text-[10px] text-slate-400 mt-0.5">
+                Ingresa tú mismo el costo de este producto.
+              </p>
+            </div>
+
+            {/* Cuadrito abajo: Agregar nuevo insumo al local */}
+            <div className="p-3 bg-slate-900/90 border border-amber-500/40 rounded-2xl space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-1.5">
+                  <Plus className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="font-black text-xs text-amber-300">Agregar Nuevo Insumo</span>
+                </div>
+                <span className="text-[10px] text-slate-400">Inventario del local</span>
+              </div>
+
+              {newIngSuccessMsg && (
+                <div className="p-2 bg-emerald-500/20 border border-emerald-500/40 rounded-xl text-emerald-300 text-[11px] font-bold">
+                  {newIngSuccessMsg}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <div>
+                  <label className="text-[10px] text-slate-400 block mb-1">Nombre del nuevo insumo *</label>
+                  <input
+                    type="text"
+                    placeholder="Ej. Crema chantilly, Sirope de fresa, Queso, etc."
+                    value={newIngName}
+                    onChange={e => setNewIngName(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Unidad de medida</label>
+                    <select
+                      value={newIngUnit}
+                      onChange={e => setNewIngUnit(e.target.value as any)}
+                      className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
+                    >
+                      <option value="g">Gramos (g)</option>
+                      <option value="kg">Kilogramos (kg)</option>
+                      <option value="ml">Mililitros (ml)</option>
+                      <option value="unidades">Unidades</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Costo unitario (COP)</label>
+                    <input
+                      type="number"
+                      placeholder="Ej. 25 por g/und"
+                      value={newIngCost}
+                      onChange={e => setNewIngCost(e.target.value)}
+                      className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Stock inicial</label>
+                    <input
+                      type="number"
+                      placeholder="Ej. 1000"
+                      value={newIngStock}
+                      onChange={e => setNewIngStock(e.target.value)}
+                      className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Categoría</label>
+                    <select
+                      value={newIngCategory}
+                      onChange={e => setNewIngCategory(e.target.value)}
+                      className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
+                    >
+                      <option value="Insumos">Insumos</option>
+                      <option value="Helados">Helados</option>
+                      <option value="Toppings">Toppings</option>
+                      <option value="Lácteos">Lácteos</option>
+                      <option value="Otros">Otros</option>
+                    </select>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={!newIngName.trim()}
+                  onClick={handleAddNewIngredient}
+                  className="w-full py-2 bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 text-slate-950 font-black text-xs rounded-xl shadow cursor-pointer disabled:opacity-40"
+                >
+                  + Guardar Nuevo Insumo
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">Existencias Iniciales:</label>
+                <input
+                  type="number"
+                  value={stockQuantity}
+                  onChange={e => setStockQuantity(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">Unidad de medida:</label>
+                <select
+                  value={unit}
+                  onChange={e => setUnit(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-amber-400"
+                >
+                  <option value="unidades">Unidades</option>
+                  <option value="g">Gramos (g)</option>
+                  <option value="kg">Kilogramos (kg)</option>
+                  <option value="ml">Mililitros (ml)</option>
+                  <option value="L">Litros (L)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between p-2.5 bg-slate-950/70 border border-slate-800 rounded-xl">
+              <div>
+                <span className="text-white font-semibold block text-xs">Permitir existencias negativas</span>
+                <span className="text-[10px] text-slate-400">Ventas bajo demanda aun sin stock previo</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={allowNegativeStock}
+                onChange={e => setAllowNegativeStock(e.target.checked)}
+                className="w-4 h-4 accent-amber-500 cursor-pointer"
+              />
+            </div>
+
+            <div className="flex items-center justify-between p-2.5 bg-slate-950/70 border border-slate-800 rounded-xl">
+              <span className="text-white font-semibold">Producto Activo para Ventas</span>
+              <input
+                type="checkbox"
+                checked={isActive}
+                onChange={e => setIsActive(e.target.checked)}
+                className="w-4 h-4 accent-amber-500 cursor-pointer"
+              />
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={() => {
+                  setEditingProduct(null);
+                  setIsCreating(false);
+                }}
+                className="flex-1 py-2.5 bg-slate-900 border border-slate-800 text-slate-400 font-bold rounded-xl"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSave}
+                className="flex-1 py-2.5 bg-amber-500 text-slate-950 font-black rounded-xl shadow cursor-pointer"
+              >
+                Guardar Producto
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex-1 overflow-y-auto py-3 space-y-3">
+            <button
+              onClick={startCreate}
+              className="w-full py-2.5 bg-amber-500 text-slate-950 font-bold text-xs rounded-xl shadow flex items-center justify-center gap-1 cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Crear Nuevo Producto</span>
+            </button>
+
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Buscar en catálogo..."
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  className="w-full pl-7 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none"
+                />
+              </div>
+
+              <select
+                value={catFilter}
+                onChange={e => setCatFilter(e.target.value)}
+                className="px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300"
+              >
+                <option value="todos">Todas las categorías</option>
+                {categories.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+              {filtered.map(p => (
+                <div
+                  key={p.id}
+                  className={`p-2.5 bg-slate-950/70 border rounded-xl flex items-center justify-between text-xs transition ${
+                    p.isActive ? 'border-slate-800' : 'border-slate-800/40 opacity-50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    {p.imagePath ? (
+                      <img src={p.imagePath} alt={p.name} className="w-9 h-9 object-cover rounded-lg border border-slate-800" />
+                    ) : (
+                      <span className="text-xl p-1 bg-slate-900 rounded-lg">{p.emoji}</span>
+                    )}
+                    <div>
+                      <span className="font-bold text-white block text-xs">{p.name}</span>
+                      <span className="text-[10px] text-amber-400 font-bold">
+                        {formatCOP(p.basePrice)} • {p.stockQuantity} {p.unit}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => startEdit(p)}
+                      className="px-2.5 py-1 bg-slate-900 border border-slate-800 text-slate-200 hover:text-white rounded-lg text-[11px] font-bold"
+                    >
+                      Editar
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (confirm(`¿Eliminar ${p.name}?`)) onDeleteProduct(p.id);
+                      }}
+                      className="p-1 text-red-400 hover:text-red-300"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CategoryManagementModal({
+  categories,
+  products,
+  onCreateCategory,
+  onUpdateCategory,
+  onDeleteCategory,
+  onClose
+}: {
+  categories: CategoryItem[];
+  products: Product[];
+  onCreateCategory: (name: string, emoji: string) => string | null;
+  onUpdateCategory: (id: string, name: string, emoji: string) => string | null;
+  onDeleteCategory: (id: string, reassignToId: string) => string | null;
+  onClose: () => void;
+}) {
+  const [newCatName, setNewCatName] = useState('');
+  const [newCatEmoji, setNewCatEmoji] = useState('🍦');
+  const [catToDelete, setCatToDelete] = useState<CategoryItem | null>(null);
+  const [reassignTargetId, setReassignTargetId] = useState<string>('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const getProductCount = (catId: string) => products.filter(p => p.categoryId === catId).length;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="w-full max-w-md bg-[#0B1224] border border-slate-800 rounded-t-[32px] sm:rounded-3xl p-5 shadow-2xl flex flex-col space-y-3.5 animate-in slide-in-from-bottom duration-200">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Layers className="w-5 h-5 text-amber-400" />
+            <h3 className="font-black text-sm text-white">
+              {catToDelete ? 'Reasignar Productos & Eliminar' : 'Administrar Categorías'}
+            </h3>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-slate-800 text-slate-400 rounded-lg">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {errorMsg && (
+          <div className="p-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-xs font-semibold">
+            {errorMsg}
+          </div>
+        )}
+
+        {catToDelete ? (
+          <div className="space-y-3 text-xs">
+            <p className="text-slate-300">
+              La categoría <strong className="text-amber-400">{catToDelete.name}</strong> contiene <strong className="text-white">{getProductCount(catToDelete.id)} producto(s)</strong>.
+              Para no perderlos, selecciona a qué categoría reasignarlos obligatoriamente:
+            </p>
+
+            <div className="space-y-1.5">
+              {categories.filter(c => c.id !== catToDelete.id).map(target => {
+                const isSelected = reassignTargetId === target.id;
+                return (
+                  <div
+                    key={target.id}
+                    onClick={() => setReassignTargetId(target.id)}
+                    className={`p-2.5 rounded-xl border flex items-center justify-between cursor-pointer ${
+                      isSelected
+                        ? 'bg-amber-500/20 border-amber-500 text-white font-bold'
+                        : 'bg-slate-950 border-slate-800 text-slate-300'
+                    }`}
+                  >
+                    <span>{target.emoji} {target.name}</span>
+                    {isSelected && <Check className="w-4 h-4 text-amber-400" />}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={() => setCatToDelete(null)}
+                className="flex-1 py-2.5 bg-slate-900 border border-slate-800 text-slate-400 font-bold rounded-xl"
+              >
+                Cancelar
+              </button>
+              <button
+                disabled={!reassignTargetId}
+                onClick={() => {
+                  const err = onDeleteCategory(catToDelete.id, reassignTargetId);
+                  if (err) setErrorMsg(err);
+                  else setCatToDelete(null);
+                }}
+                className="flex-1 py-2.5 bg-red-600 hover:bg-red-500 text-white font-black rounded-xl shadow disabled:opacity-50 cursor-pointer"
+              >
+                Reasignar y Eliminar
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {/* Create form */}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Nueva categoría..."
+                value={newCatName}
+                onChange={e => {
+                  setNewCatName(e.target.value);
+                  setErrorMsg(null);
+                }}
+                className="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-amber-400"
+              />
+              <button
+                onClick={() => {
+                  const err = onCreateCategory(newCatName, newCatEmoji);
+                  if (err) setErrorMsg(err);
+                  else setNewCatName('');
+                }}
+                className="px-4 py-2 bg-amber-500 text-slate-950 font-bold text-xs rounded-xl shadow cursor-pointer"
+              >
+                Crear
+              </button>
+            </div>
+
+            {/* List */}
+            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+              {categories.map(c => {
+                const count = getProductCount(c.id);
+                return (
+                  <div
+                    key={c.id}
+                    className="p-2.5 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between text-xs"
+                  >
+                    <div>
+                      <span className="font-bold text-white block text-xs">{c.emoji} {c.name}</span>
+                      <span className="text-[10px] text-slate-500">{count} producto(s) asignado(s)</span>
+                    </div>
+
+                    {categories.length > 1 && (
+                      <button
+                        onClick={() => {
+                          const fallback = categories.find(cat => cat.id !== c.id);
+                          setReassignTargetId(fallback?.id || '');
+                          setCatToDelete(c);
+                          setErrorMsg(null);
+                        }}
+                        className="p-1 text-red-400 hover:text-red-300"
+                        title="Eliminar categoría con reasignación"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StockAuditModal({
+  products,
+  movements,
+  auditorName,
+  onAdjustStock,
+  onClose
+}: {
+  products: Product[];
+  movements: InventoryMovement[];
+  auditorName: string;
+  onAdjustStock: (productId: string, newStock: number, reason: string, type: string) => string | null;
+  onClose: () => void;
+}) {
+  const [subTab, setSubTab] = useState<'adjust' | 'logs'>('adjust');
+  const [selectedProductId, setSelectedProductId] = useState<string>(products[0]?.id || '');
+  const [mode, setMode] = useState<'MANUAL_ADJUSTMENT' | 'PURCHASE' | 'WASTE_MERMA'>('PURCHASE');
+  const [amountInput, setAmountInput] = useState('');
+  const [reasonInput, setReasonInput] = useState('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const selectedProd = products.find(p => p.id === selectedProductId) || products[0];
+
+  const handleApply = () => {
+    if (!selectedProd) return;
+    const qty = parseFloat(amountInput);
+    if (isNaN(qty) || qty <= 0 && mode !== 'MANUAL_ADJUSTMENT') {
+      setErrorMsg('Ingresa una cantidad numérica válida.');
+      return;
+    }
+    if (!reasonInput.trim()) {
+      setErrorMsg('El motivo del movimiento es obligatorio para la auditoría.');
+      return;
+    }
+
+    let resultingStock = selectedProd.stockQuantity;
+    if (mode === 'PURCHASE') {
+      resultingStock = selectedProd.stockQuantity + qty;
+    } else if (mode === 'WASTE_MERMA') {
+      resultingStock = Math.max(0, selectedProd.stockQuantity - qty);
+    } else {
+      resultingStock = qty;
+    }
+
+    const err = onAdjustStock(selectedProd.id, resultingStock, reasonInput, mode);
+    if (err) {
+      setErrorMsg(err);
+    } else {
+      setAmountInput('');
+      setReasonInput('');
+      setSubTab('logs');
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="w-full max-w-md bg-[#0B1224] border border-slate-800 rounded-t-[32px] sm:rounded-3xl p-5 shadow-2xl flex flex-col max-h-[90vh] animate-in slide-in-from-bottom duration-200">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+          <div className="flex items-center space-x-2">
+            <RefreshCw className="w-5 h-5 text-amber-400" />
+            <h3 className="font-black text-sm text-white">Inventario y Auditoría</h3>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-slate-800 text-slate-400 rounded-lg">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Subtabs */}
+        <div className="grid grid-cols-2 gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 my-3">
+          <button
+            onClick={() => setSubTab('adjust')}
+            className={`py-1.5 rounded-lg text-xs font-bold transition ${
+              subTab === 'adjust' ? 'bg-amber-500 text-slate-950 font-black shadow' : 'text-slate-400'
+            }`}
+          >
+            Ajustar Stock
+          </button>
+          <button
+            onClick={() => setSubTab('logs')}
+            className={`py-1.5 rounded-lg text-xs font-bold transition ${
+              subTab === 'logs' ? 'bg-amber-500 text-slate-950 font-black shadow' : 'text-slate-400'
+            }`}
+          >
+            Auditoría ({movements.length})
+          </button>
+        </div>
+
+        {errorMsg && (
+          <div className="mb-2 p-2 bg-red-500/20 border border-red-500/40 rounded-xl text-red-300 text-xs font-semibold">
+            {errorMsg}
+          </div>
+        )}
+
+        {subTab === 'adjust' ? (
+          <div className="flex-1 overflow-y-auto space-y-3 text-xs pr-1">
+            <div>
+              <label className="text-[11px] text-slate-400 block mb-1">Producto a modificar:</label>
+              <select
+                value={selectedProductId}
+                onChange={e => setSelectedProductId(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-semibold focus:outline-none focus:border-amber-400"
+              >
+                {products.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.emoji} {p.name} (Stock: {p.stockQuantity} {p.unit})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[11px] text-slate-400 block mb-1">Tipo de Operación:</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setMode('PURCHASE')}
+                  className={`py-1.5 px-2 rounded-xl border font-bold text-[11px] transition ${
+                    mode === 'PURCHASE'
+                      ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
+                      : 'bg-slate-950 border-slate-800 text-slate-400'
+                  }`}
+                >
+                  + Entrada
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode('WASTE_MERMA')}
+                  className={`py-1.5 px-2 rounded-xl border font-bold text-[11px] transition ${
+                    mode === 'WASTE_MERMA'
+                      ? 'bg-red-500/20 border-red-500 text-red-300'
+                      : 'bg-slate-950 border-slate-800 text-slate-400'
+                  }`}
+                >
+                  - Merma
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode('MANUAL_ADJUSTMENT')}
+                  className={`py-1.5 px-2 rounded-xl border font-bold text-[11px] transition ${
+                    mode === 'MANUAL_ADJUSTMENT'
+                      ? 'bg-amber-500/20 border-amber-500 text-amber-300'
+                      : 'bg-slate-950 border-slate-800 text-slate-400'
+                  }`}
+                >
+                  Fijar Total
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[11px] text-slate-400 block mb-1">
+                {mode === 'MANUAL_ADJUSTMENT' ? 'Nuevo Total Resultante:' : 'Cantidad a Modificar:'}
+              </label>
+              <input
+                type="number"
+                placeholder={mode === 'MANUAL_ADJUSTMENT' ? 'Ej. 50' : 'Ej. 10'}
+                value={amountInput}
+                onChange={e => {
+                  setAmountInput(e.target.value);
+                  setErrorMsg(null);
+                }}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl font-bold text-amber-400 focus:outline-none focus:border-amber-400"
+              />
+            </div>
+
+            <div>
+              <label className="text-[11px] text-slate-400 block mb-1">Motivo Obligatorio de Auditoría:</label>
+              <input
+                type="text"
+                placeholder="Ej. Factura compra #540, daño en refrigerador"
+                value={reasonInput}
+                onChange={e => {
+                  setReasonInput(e.target.value);
+                  setErrorMsg(null);
+                }}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-amber-400"
+              />
+            </div>
+
+            <p className="text-[10px] text-slate-500">
+              Auditor responsable: <strong className="text-slate-300">{auditorName}</strong>
+            </p>
+
+            <button
+              onClick={handleApply}
+              className="w-full py-2.5 bg-amber-500 text-slate-950 font-black text-xs rounded-xl shadow cursor-pointer mt-2"
+            >
+              Registrar Movimiento
+            </button>
+          </div>
+        ) : (
+          <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+            {movements.length === 0 ? (
+              <p className="text-slate-500 text-center py-6 text-xs">Sin movimientos auditados.</p>
+            ) : (
+              movements.map(m => (
+                <div key={m.id} className="p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-white text-xs">{m.productName}</span>
+                    <span className={`font-black text-xs ${m.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {m.change >= 0 ? `+${m.change}` : m.change} (Stock: {m.resultingStock})
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-slate-400">
+                    <span className="font-mono bg-slate-900 px-1.5 py-0.5 rounded text-amber-300">{m.type}</span>
+                    <span>{m.dateFormatted}</span>
+                  </div>
+                  <p className="text-[10px] text-slate-300 italic">«{m.reason}» • por {m.userName}</p>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

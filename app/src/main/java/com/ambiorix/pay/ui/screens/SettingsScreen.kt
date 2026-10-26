@@ -1216,16 +1216,19 @@ fun SettingsScreen(
             // =========================================================================
             // HISTORIAL Y SEGURIDAD (CAMBIO DE PIN)
             // =========================================================================
-            SettingsCard(title = "Historial y PIN") {
+            SettingsCard(title = "Finanzas y Seguridad") {
                 Button(
                     onClick = onOpenHistoryClick,
                     colors = ButtonDefaults.buttonColors(containerColor = DarkSurfaceElevated),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Icon(Icons.Default.History, contentDescription = null, tint = GoldPrimary)
+                    Icon(Icons.Default.DateRange, contentDescription = null, tint = GoldPrimary)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Ver Historial de Pagos", color = GoldPrimary)
+                    Column(horizontalAlignment = Alignment.Start) {
+                        Text("Historial de ventas y pagos", color = GoldPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text("Calendario interactivo: Nequi, efectivo, gastos y productos", color = TextGray, fontSize = 11.sp)
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
