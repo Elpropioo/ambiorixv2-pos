@@ -64,7 +64,14 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    testOptions {
+        unitTests.all {
+            it.maxHeapSize = "256m"
+        }
+    }
 }
+
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.09.00")

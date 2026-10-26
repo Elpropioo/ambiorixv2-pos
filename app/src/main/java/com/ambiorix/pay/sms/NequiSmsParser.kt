@@ -66,8 +66,10 @@ object NequiSmsParser {
                 "el\\s+negocio\\s*(?:\\(([^)]+)\\)|([A-Za-z0-9ÁÉÍÓÚÑáéíóúñ\\s.,-]+?))\\s+" +
                 "recibi[oó]\\s+\\$\\s*([0-9.,]+)\\s+de\\s+" +
                 "([A-Za-zÁÉÍÓÚÑáéíóúñ\\s]+?)" +
+                "(?:\\s+en\\s+tu\\s+Nequi(?:\\s+Negocios)?)?" +
                 "(?:\\s+el\\s+([0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}(?:\\s+a\\s+las\\s+[0-9]{1,2}:[0-9]{2}(?:\\s*[a-z. ]+)?)?))?" +
-                "(?:\\s+a\\s+trav[eé]s\\s+de\\s+([A-Za-z0-9\\-_ ]+))?\\.?\\s*$"
+                "(?:\\s+a\\s+trav[eé]s\\s+de\\s+([A-Za-z0-9\\-_ ]+?))?" +
+                "(?:\\.?\\s*(?:Ref|Referencia)\\.?\\s*:?\\s*[A-Za-z0-9\\-]+)?\\.?\\s*$"
     )
 
     /**
@@ -78,9 +80,12 @@ object NequiSmsParser {
         "(?i)^\\s*(?:Notificaci[oó]n\\s+Nequi\\s*:\\s*|Nequi\\s*:\\s*)?" +
                 "(?:recibiste|te\\s+enviaron|te\\s+pasaron)\\s+\\$\\s*([0-9.,]+)\\s+de\\s+" +
                 "([A-Za-zÁÉÍÓÚÑáéíóúñ\\s]+?)" +
+                "(?:\\s+en\\s+tu\\s+Nequi(?:\\s+Negocios)?)?" +
                 "(?:\\s+el\\s+([0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}(?:\\s+a\\s+las\\s+[0-9]{1,2}:[0-9]{2}(?:\\s*[a-z. ]+)?)?))?" +
-                "(?:\\s+a\\s+trav[eé]s\\s+de\\s+([A-Za-z0-9\\-_ ]+))?\\.?\\s*$"
+                "(?:\\s+a\\s+trav[eé]s\\s+de\\s+([A-Za-z0-9\\-_ ]+?))?" +
+                "(?:\\.?\\s*(?:Ref|Referencia)\\.?\\s*:?\\s*[A-Za-z0-9\\-]+)?\\.?\\s*$"
     )
+
 
     fun parse(originatingAddress: String?, body: String?): SmsPaymentParseResult {
         if (body.isNullOrBlank()) {

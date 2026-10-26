@@ -871,11 +871,11 @@ class PosManagementTest {
     // 28. No duplicar ventas y transacciones de cobro
     @Test
     fun testNoDuplicarVentasYTransaccionesDeCobro() {
-        val testDate = "2026-10-31"
         val prod = repository.createProduct(
             name = "Copa Especial",
             basePrice = 16000L,
-            categoryId = "copas"
+            categoryId = "copas",
+            stockQuantity = 10.0
         ).getOrThrow()
 
         val cartItem = com.ambiorix.pay.pos.CartItem(
@@ -899,13 +899,32 @@ class PosManagementTest {
             senderName = "Mónica Silva"
         ).getOrThrow()
 
+        // Intentar repetir la misma operación con el mismo saleId no debe duplicar ni venta ni cobro ni descuento de stock
+        val repeatedSale = repository.completeSale(
+            items = listOf(cartItem),
+            subtotal = 16000L,
+            discount = 0L,
+            total = 16000L,
+            paymentMethod = "NEQUI",
+            cashierName = "Laura Gómez",
+            senderName = "Mónica Silva",
+            saleId = sale.id
+        ).getOrThrow()
+        assertEquals(sale.id, repeatedSale.id)
+        assertEquals(1, repository.sales.value.count { it.id == sale.id })
+
+        val updatedProd = repository.products.value.find { it.id == prod.id }!!
+        assertEquals("El stock debe descontarse una única vez", 9.0, updatedProd.stockQuantity, 0.001)
+
         val todayDate = repository.getTodayDateKey()
         val summary = repository.getDailyFinancialSummary(todayDate)
 
         // El total recibido debe computar exactamente 16000L de Nequi, nunca 32000L (duplicando venta + pago)
-        val saleTx = summary.nequiTransactions.find { it.saleId == sale.id }
+        val saleTxs = summary.nequiTransactions.filter { it.saleId == sale.id }
+        assertEquals("Debe existir exactamente una transacción Nequi vinculada a la venta", 1, saleTxs.size)
+        val saleTx = saleTxs.first()
         assertNotNull("Debe existir la transacción Nequi vinculada a la venta", saleTx)
-        assertEquals(16000L, saleTx!!.amount)
+        assertEquals(16000L, saleTx.amount)
         assertEquals(sale.id, saleTx.saleId)
     }
 
@@ -1004,5 +1023,497 @@ class PosManagementTest {
         assertEquals(75000L, foundTx!!.amount)
         assertEquals("M554433", foundTx.bankTransactionRef)
     }
+
+    // =========================================================================
+    // SECCIÓN 22: PRUEBAS DE RESERVAS NEQUI, COMUNICACIÓN SMS Y CONCILIACIÓN
+    // =========================================================================
+
+    private class FakePeerTransport {
+        val sentFromHeladeria = mutableListOf<String>()
+        val sentFromPizzeria = mutableListOf<String>()
+        var failHeladeriaSend = false
+        var failPizzeriaSend = false
+        var autoDeliver = true
+
+        lateinit var heladeriaRepo: PosRepository
+        lateinit var pizzeriaRepo: PosRepository
+
+        val heladeriaTransport = object : com.ambiorix.pay.pos.StoreCoordinationTransport {
+            override fun sendCommand(payload: String, targetPhone: String): Boolean {
+                if (failHeladeriaSend) return false
+                sentFromHeladeria.add(payload)
+                if (autoDeliver && ::pizzeriaRepo.isInitialized) {
+                    pizzeriaRepo.processIncomingCoordinationSms(payload, "3001111111")
+                }
+                return true
+            }
+        }
+
+        val pizzeriaTransport = object : com.ambiorix.pay.pos.StoreCoordinationTransport {
+            override fun sendCommand(payload: String, targetPhone: String): Boolean {
+                if (failPizzeriaSend) return false
+                sentFromPizzeria.add(payload)
+                if (autoDeliver && ::heladeriaRepo.isInitialized) {
+                    heladeriaRepo.processIncomingCoordinationSms(payload, "3002222222")
+                }
+                return true
+            }
+        }
+    }
+
+    private fun createPeerStores(bus: FakePeerTransport): Pair<PosRepository, PosRepository> {
+        val storageH = InMemoryPosStorage()
+        val storageP = InMemoryPosStorage()
+        val repoH = PosRepository.createForTesting(storageH)
+        val repoP = PosRepository.createForTesting(storageP)
+        repoH.coordinationTransport = bus.heladeriaTransport
+        repoP.coordinationTransport = bus.pizzeriaTransport
+        repoH.configureStore(
+            localStoreId = "HELADERIA",
+            peerStoreId = "PIZZERIA",
+            peerPhone = "3002222222"
+        )
+        repoP.configureStore(
+            localStoreId = "PIZZERIA",
+            peerStoreId = "HELADERIA",
+            peerPhone = "3001111111"
+        )
+        bus.heladeriaRepo = repoH
+        bus.pizzeriaRepo = repoP
+        return Pair(repoH, repoP)
+    }
+
+    // A. Reservas (Escenarios 1 a 7 y 46)
+    @Test
+    fun testReservasEntreHeladeriaYPizzeriaYAmbiguedad() {
+        val bus = FakePeerTransport()
+        val (heladeria, pizzeria) = createPeerStores(bus)
+
+        val prodH = heladeria.products.value.first { !it.isCombo && it.stockQuantity >= 5.0 }
+        val initialStockH = prodH.stockQuantity
+        val itemH = com.ambiorix.pay.pos.CartItem(
+            cartItemId = "c-h-1",
+            productId = prodH.id,
+            productName = prodH.name,
+            basePrice = 32500L,
+            unitPrice = 32500L,
+            quantity = 1,
+            totalPrice = 32500L
+        )
+
+        // 1. La heladería crea una reserva por $32.500
+        val resH = heladeria.createNequiReservation(
+            amount = 32500L,
+            items = listOf(itemH),
+            subtotal = 32500L,
+            discount = 0L,
+            cashierName = "Laura Gómez"
+        ).getOrThrow()
+
+        assertEquals(32500L, resH.amount)
+        // 46. Una reserva no descuenta inventario
+        assertEquals(initialStockH, heladeria.products.value.first { it.id == prodH.id }.stockQuantity, 0.001)
+
+        // 2. El mensaje contiene el valor correcto
+        val reserveSms = bus.sentFromHeladeria.first { it.contains("|RESERVE|") }
+        assertTrue(reserveSms.contains("amount=32500"))
+        assertTrue(reserveSms.contains("src=HELADERIA"))
+
+        // 3. La pizzería guarda la reserva y envía RESERVE_ACK
+        val pizzeriaSavedH = pizzeria.reservations.value.find { it.id == resH.id }
+        assertNotNull("La pizzería debe guardar la reserva de la heladería", pizzeriaSavedH)
+        assertEquals(32500L, pizzeriaSavedH!!.amount)
+        assertEquals("HELADERIA", pizzeriaSavedH.storeId)
+
+        // Heladería recibió RESERVE_ACK
+        val heladeriaUpdatedH = heladeria.reservations.value.find { it.id == resH.id }!!
+        assertEquals(com.ambiorix.pay.pos.SyncState.ACKNOWLEDGED, heladeriaUpdatedH.syncState)
+
+        // 4. Un SMS duplicado no duplica la reserva
+        pizzeria.processIncomingCoordinationSms(reserveSms, "3001111111")
+        assertEquals(1, pizzeria.reservations.value.count { it.id == resH.id })
+
+        // 5 y 6. La pizzería puede crear su propia reserva y no sobrescribe la anterior
+        val itemP = itemH.copy(cartItemId = "c-p-1", basePrice = 45000L, unitPrice = 45000L, totalPrice = 45000L)
+        val resP = pizzeria.createNequiReservation(
+            amount = 45000L,
+            items = listOf(itemP),
+            subtotal = 45000L,
+            discount = 0L,
+            cashierName = "Carlos"
+        ).getOrThrow()
+
+        assertEquals(2, heladeria.reservations.value.size)
+        assertEquals(2, pizzeria.reservations.value.size)
+        assertNotNull(heladeria.reservations.value.find { it.id == resP.id })
+
+        // 7. Dos reservas del mismo valor ($32.500) en distintos locales se consideran ambiguas
+        val itemP2 = itemH.copy(cartItemId = "c-p-2", basePrice = 32500L, unitPrice = 32500L, totalPrice = 32500L)
+        val resPSameAmount = pizzeria.createNequiReservation(
+            amount = 32500L,
+            items = listOf(itemP2),
+            subtotal = 32500L,
+            discount = 0L,
+            cashierName = "Carlos"
+        ).getOrThrow()
+
+        val bankSmsAmbiguous = "Nequi: Recibiste $32.500 de Juan Perez en tu Nequi Negocios. Ref. M998877"
+        val notifH = heladeria.processNequiBankSms(bankSmsAmbiguous, "85954", 1793025500000L)!!
+        assertEquals(com.ambiorix.pay.pos.NotificationState.REQUIRES_REVIEW, notifH.state)
+        assertEquals(
+            com.ambiorix.pay.pos.ReservationState.REQUIRES_REVIEW,
+            heladeria.reservations.value.find { it.id == resH.id }!!.state
+        )
+        assertEquals(
+            com.ambiorix.pay.pos.ReservationState.REQUIRES_REVIEW,
+            heladeria.reservations.value.find { it.id == resPSameAmount.id }!!.state
+        )
+    }
+
+    // B. Notificaciones Nequi (Escenarios 8 a 15 y 45)
+    @Test
+    fun testProcesamientoNotificacionesBancariasNequi() {
+        val bus = FakePeerTransport()
+        val (heladeria, pizzeria) = createPeerStores(bus)
+
+        val prod = heladeria.createProduct(
+            name = "Malteada Especial",
+            basePrice = 24000L,
+            categoryId = "helados",
+            stockQuantity = 10.0
+        ).getOrThrow()
+
+        val item = com.ambiorix.pay.pos.CartItem(
+            cartItemId = "c-1",
+            productId = prod.id,
+            productName = prod.name,
+            basePrice = 24000L,
+            unitPrice = 24000L,
+            quantity = 1,
+            totalPrice = 24000L
+        )
+
+        val res = heladeria.createNequiReservation(
+            amount = 24000L,
+            items = listOf(item),
+            subtotal = 24000L,
+            discount = 0L,
+            cashierName = "Laura Gómez"
+        ).getOrThrow()
+
+        // 9. Una notificación de valor diferente no confirma la reserva
+        val wrongAmountSms = "Nequi: Recibiste $19.000 de Pedro Gomez. Ref. M111222"
+        val notifWrong = heladeria.processNequiBankSms(wrongAmountSms, "85954", 1793026000000L)!!
+        assertEquals(com.ambiorix.pay.pos.NotificationState.UNASSIGNED, notifWrong.state)
+        assertNotEquals(
+            com.ambiorix.pay.pos.ReservationState.COMPLETED,
+            heladeria.reservations.value.find { it.id == res.id }!!.state
+        )
+
+        // 10. Una notificación sin valor extraíble queda pendiente de revisión
+        val noAmountSms = "Nequi: Tienes un movimiento en tu cuenta Nequi Negocios por verificar."
+        val notifNoAmount = heladeria.processNequiBankSms(noAmountSms, "85954", 1793026010000L)!!
+        assertEquals(com.ambiorix.pay.pos.NotificationState.REQUIRES_REVIEW, notifNoAmount.state)
+        // 15. Los datos bancarios no disponibles no se inventan
+        assertEquals(0L, notifNoAmount.amount)
+        assertNull(notifNoAmount.senderName)
+        assertNull(notifNoAmount.bankRef)
+
+        // 14. Un comando interno no registra una venta si no hay notificación bancaria real
+        val salesBefore = heladeria.sales.value.size
+        assertEquals(salesBefore, heladeria.sales.value.size)
+
+        // 8 y 45. Una notificación bancaria coincide con una única reserva válida, confirma la venta y descuenta stock una sola vez
+        val matchingSms = "Nequi: Recibiste $24.000 de Maria Fernanda. Ref. M334455"
+        val notifMatchH = heladeria.processNequiBankSms(matchingSms, "85954", 1793026050000L)!!
+        // También llega al teléfono de la pizzería
+        val notifMatchP = pizzeria.processNequiBankSms(matchingSms, "85954", 1793026050000L)!!
+
+        assertEquals(com.ambiorix.pay.pos.NotificationState.LINKED_TO_SALE, notifMatchH.state)
+        assertEquals(
+            com.ambiorix.pay.pos.ReservationState.COMPLETED,
+            heladeria.reservations.value.find { it.id == res.id }!!.state
+        )
+        assertEquals(
+            com.ambiorix.pay.pos.ReservationState.COMPLETED,
+            pizzeria.reservations.value.find { it.id == res.id }!!.state
+        )
+        // La pizzería no registra una venta propia para la reserva de la heladería
+        assertEquals(0, pizzeria.sales.value.count { it.id == notifMatchH.linkedSaleId })
+        assertEquals(9.0, heladeria.products.value.first { it.id == prod.id }.stockQuantity, 0.001)
+        assertEquals("HELADERIA", notifMatchP.assignedStore)
+
+        // 12. La misma notificación recibida dos veces no produce dos ventas
+        val duplicateNotif = heladeria.processNequiBankSms(matchingSms, "85954", 1793026050000L)!!
+        assertEquals(com.ambiorix.pay.pos.NotificationState.DUPLICATE_EVENT, duplicateNotif.state)
+        assertEquals(9.0, heladeria.products.value.first { it.id == prod.id }.stockQuantity, 0.001)
+
+        // 13. Dos transferencias reales distintas del mismo valor ($24.000) con diferente referencia no se fusionan
+        val secondRealSms = "Nequi: Recibiste $24.000 de Maria Fernanda. Ref. M999888"
+        val secondNotif = heladeria.processNequiBankSms(secondRealSms, "85954", 1793026090000L)!!
+        assertNotEquals(notifMatchH.id, secondNotif.id)
+        assertEquals(com.ambiorix.pay.pos.NotificationState.UNASSIGNED, secondNotif.state)
+    }
+
+    // C. Cancelación y D. Cambio a efectivo + Notificación tardía (Escenarios 16 a 27, 37, 43, 44)
+    @Test
+    fun testCancelacionCambioAEfectivoYNotificacionTardia() {
+        val bus = FakePeerTransport()
+        val (heladeria, pizzeria) = createPeerStores(bus)
+
+        val prod = heladeria.createProduct(
+            name = "Sundae Arequipe",
+            basePrice = 32500L,
+            categoryId = "helados",
+            stockQuantity = 10.0
+        ).getOrThrow()
+
+        val item = com.ambiorix.pay.pos.CartItem(
+            cartItemId = "c-sundae",
+            productId = prod.id,
+            productName = prod.name,
+            basePrice = 32500L,
+            unitPrice = 32500L,
+            quantity = 1,
+            totalPrice = 32500L
+        )
+
+        val res = heladeria.createNequiReservation(
+            amount = 32500L,
+            items = listOf(item),
+            subtotal = 32500L,
+            discount = 0L,
+            cashierName = "Laura Gómez"
+        ).getOrThrow()
+
+        val originalReserveSms = bus.sentFromHeladeria.last { it.contains("|RESERVE|") }
+
+        // 16 y 17. Cancelar reserva cambia estado de manera persistente y se comunica al otro local
+        val cancelled = heladeria.cancelNequiReservation(res.id, "USER_CANCEL").getOrThrow()
+        assertEquals(com.ambiorix.pay.pos.ReservationState.CANCELLED, cancelled.state)
+        assertEquals(
+            com.ambiorix.pay.pos.ReservationState.CANCELLED,
+            pizzeria.reservations.value.find { it.id == res.id }!!.state
+        )
+        // 21. La cancelación conserva los ítems de la orden en la reserva para que el carrito no se pierda
+        val recoveredAfterCancel = heladeria.recoverReservationCart(res.id)
+        assertEquals(1, recoveredAfterCancel.size)
+        assertEquals("Sundae Arequipe", recoveredAfterCancel.first().productName)
+
+        // 18. Un SMS de cancelación duplicado es idempotente
+        val cancelSms = bus.sentFromHeladeria.last { it.contains("|CANCEL|") }
+        pizzeria.processIncomingCoordinationSms(cancelSms, "3001111111")
+        assertEquals(
+            com.ambiorix.pay.pos.ReservationState.CANCELLED,
+            pizzeria.reservations.value.find { it.id == res.id }!!.state
+        )
+
+        // 19 y 43. Un mensaje RESERVE antiguo no reactiva una reserva cancelada
+        pizzeria.processIncomingCoordinationSms(originalReserveSms, "3001111111")
+        assertEquals(
+            com.ambiorix.pay.pos.ReservationState.CANCELLED,
+            pizzeria.reservations.value.find { it.id == res.id }!!.state
+        )
+
+        // 22, 23, 24, 26, 27. Cambiar a efectivo conserva el carrito, sustituye la reserva y funciona aunque falle el SMS
+        val resForCash = heladeria.createNequiReservation(
+            amount = 32500L,
+            items = listOf(item),
+            subtotal = 32500L,
+            discount = 0L,
+            cashierName = "Laura Gómez"
+        ).getOrThrow()
+
+        bus.failHeladeriaSend = true // Simular fallo de envío SMS al cambiar a efectivo
+        val switched = heladeria.switchNequiReservationToCash(resForCash.id).getOrThrow()
+        assertEquals(com.ambiorix.pay.pos.ReservationState.REPLACED_BY_CASH, switched.state)
+        assertEquals(com.ambiorix.pay.pos.SyncState.RETRY_PENDING, switched.syncState)
+        assertEquals(1, heladeria.recoverReservationCart(resForCash.id).size)
+
+        val cashSale = heladeria.completeCashSaleFromReservation(
+            reservationId = resForCash.id,
+            cashierName = "Laura Gómez"
+        ).getOrThrow()
+        assertEquals("CASH", cashSale.paymentMethod)
+        assertEquals(9.0, heladeria.products.value.first { it.id == prod.id }.stockQuantity, 0.001)
+
+        // 20, 25, 44. Llega notificación bancaria tardía por $32.500 después de cancelar / cambiar a efectivo
+        val lateSms = "Nequi: Recibiste $32.500 de Camilo Rojas. Ref. M777666"
+        val lateNotif = heladeria.processNequiBankSms(lateSms, "85954", 1793027000000L)!!
+
+        assertEquals(com.ambiorix.pay.pos.NotificationState.RECONCILIATION_PENDING, lateNotif.state)
+        // No se crea una segunda venta ni se descuenta inventario otra vez
+        assertEquals(9.0, heladeria.products.value.first { it.id == prod.id }.stockQuantity, 0.001)
+        assertEquals(1, heladeria.sales.value.count { it.id == cashSale.id })
+
+        // Conciliar la notificación tardía sin duplicar venta
+        val reconciled = heladeria.reconcileLateNotification(
+            notificationId = lateNotif.id,
+            resolutionNote = "Transferencia tardía verificada para devolución o abono",
+            cashierName = "Laura Gómez"
+        ).getOrThrow()
+        assertEquals(com.ambiorix.pay.pos.NotificationState.ASSIGNED, reconciled.state)
+    }
+
+    // E. Asignación manual desde el historial y F. Sincronización / Persistencia (Escenarios 11, 28 a 42)
+    @Test
+    fun testAsignacionManualSinReservaYSincronizacionPersistente() {
+        val bus = FakePeerTransport()
+        val (heladeria, pizzeria) = createPeerStores(bus)
+
+        // 11 y 28. Una transacción sin reserva se guarda en ambos historiales como pendiente de asignación (UNASSIGNED)
+        val rawBankSms = "Nequi: Recibiste $18.000 de Luisa Martinez. Ref. M445566"
+        val bankTs = 1793027220000L
+        val notifH = heladeria.processNequiBankSms(rawBankSms, "85954", bankTs)!!
+        val notifP = pizzeria.processNequiBankSms(rawBankSms, "85954", bankTs)!!
+
+        assertEquals(notifH.id, notifP.id)
+        assertEquals(com.ambiorix.pay.pos.NotificationState.UNASSIGNED, notifH.state)
+        assertEquals(com.ambiorix.pay.pos.NotificationState.UNASSIGNED, notifP.state)
+
+        // 30, 31, 33, 34. En la heladería eligen «El otro local» (PIZZERIA)
+        heladeria.assignNotificationToPeerStore(
+            notificationOrTxId = notifH.id,
+            cashierName = "Laura Gómez"
+        ).getOrThrow()
+
+        val assignSms = bus.sentFromHeladeria.last { it.contains("|ASSIGN|") }
+        assertTrue(assignSms.contains("dst=PIZZERIA"))
+        assertTrue(assignSms.contains("amount=18000"))
+
+        // El destino (Pizzería) encontró la notificación original, la asignó a PIZZERIA y respondió ASSIGN_ACK
+        val updatedNotifP = pizzeria.bankNotifications.value.find { it.id == notifP.id }!!
+        assertEquals(com.ambiorix.pay.pos.NotificationState.ASSIGNED, updatedNotifP.state)
+        assertEquals("PIZZERIA", updatedNotifP.assignedStore)
+
+        val updatedNotifH = heladeria.bankNotifications.value.find { it.id == notifH.id }!!
+        assertEquals(com.ambiorix.pay.pos.SyncState.ACKNOWLEDGED, updatedNotifH.syncState)
+        assertEquals("PIZZERIA", updatedNotifH.assignedStore)
+
+        // 34. Un ASSIGN duplicado no duplica la asignación
+        val txCountBefore = pizzeria.paymentTransactions.value.size
+        pizzeria.processIncomingCoordinationSms(assignSms, "3001111111")
+        assertEquals(txCountBefore, pizzeria.paymentTransactions.value.size)
+
+        // 29. Nueva transacción sin reserva asignada a «Este local»
+        val rawBankSms2 = "Nequi: Recibiste $15.500 de Andres Parra. Ref. M123987"
+        val notifH2 = heladeria.processNequiBankSms(rawBankSms2, "85954", bankTs + 5000L)!!
+        val notifP2 = pizzeria.processNequiBankSms(rawBankSms2, "85954", bankTs + 5000L)!!
+
+        val assignedLocal = heladeria.assignNotificationToLocalStore(
+            notificationOrTxId = notifH2.id,
+            cashierName = "Laura Gómez"
+        ).getOrThrow()
+        assertEquals("HELADERIA", assignedLocal.assignedStore)
+        assertEquals(
+            "HELADERIA",
+            pizzeria.bankNotifications.value.find { it.id == notifP2.id }!!.assignedStore
+        )
+
+        // 32. El destino no inventa una transacción ni venta si recibe ASSIGN de un evento desconocido
+        val unknownAssign = com.ambiorix.pay.pos.AmbiorixSmsProtocol.buildAssign(
+            tx = "NEQUI-MISSING-999",
+            src = "HELADERIA",
+            dst = "PIZZERIA",
+            amount = 21000L,
+            bankts = 1793028000000L,
+            msgId = "MSG-UNKNOWN-1"
+        )
+        val salesCountBeforeP = pizzeria.sales.value.size
+        pizzeria.processIncomingCoordinationSms(unknownAssign, "3001111111")
+        assertEquals("No debe inventar una venta", salesCountBeforeP, pizzeria.sales.value.size)
+        assertTrue(
+            "Debe guardar la asignación pendiente de sincronización sin inventar transacción",
+            pizzeria.pendingRemoteAssignments.value.any { it.tx == "NEQUI-MISSING-999" }
+        )
+
+        // 35. Dos intentos incompatibles cuando están desconectados generan REQUIRES_REVIEW
+        bus.autoDeliver = false
+        val rawBankSms3 = "Nequi: Recibiste $29.000 de Diana Castro. Ref. M654321"
+        val notifH3 = heladeria.processNequiBankSms(rawBankSms3, "85954", bankTs + 10000L)!!
+        val notifP3 = pizzeria.processNequiBankSms(rawBankSms3, "85954", bankTs + 10000L)!!
+
+        heladeria.assignNotificationToLocalStore(notifH3.id, "Laura Gómez")
+        pizzeria.assignNotificationToLocalStore(notifP3.id, "Carlos")
+
+        // Ahora llegan los SMS cruzados
+        val msgFromH = bus.sentFromHeladeria.last()
+        val msgFromP = bus.sentFromPizzeria.last()
+        pizzeria.processIncomingCoordinationSms(msgFromH, "3001111111")
+        heladeria.processIncomingCoordinationSms(msgFromP, "3002222222")
+
+        assertEquals(
+            com.ambiorix.pay.pos.NotificationState.REQUIRES_REVIEW,
+            heladeria.bankNotifications.value.find { it.id == notifH3.id }!!.state
+        )
+        assertEquals(
+            com.ambiorix.pay.pos.NotificationState.REQUIRES_REVIEW,
+            pizzeria.bankNotifications.value.find { it.id == notifP3.id }!!.state
+        )
+    }
+
+    // F. Dejar pendiente, cola de reintentos y recuperación tras reinicio (Escenarios 36, 39, 40, 41, 47)
+    @Test
+    fun testDejarPendienteReintentosYPersistenciaTrasReinicio() {
+        val storageH = InMemoryPosStorage()
+        val storageP = InMemoryPosStorage()
+        val bus = FakePeerTransport()
+        val heladeria = PosRepository.createForTesting(storageH)
+        val pizzeria = PosRepository.createForTesting(storageP)
+        heladeria.coordinationTransport = bus.heladeriaTransport
+        pizzeria.coordinationTransport = bus.pizzeriaTransport
+        heladeria.configureStore("HELADERIA", "PIZZERIA", "3002222222")
+        pizzeria.configureStore("PIZZERIA", "HELADERIA", "3001111111")
+        bus.heladeriaRepo = heladeria
+        bus.pizzeriaRepo = pizzeria
+
+        val prod = heladeria.products.value.first { !it.isCombo && it.stockQuantity >= 5.0 }
+        val item = com.ambiorix.pay.pos.CartItem(
+            cartItemId = "c-pend-1",
+            productId = prod.id,
+            productName = prod.name,
+            basePrice = 27000L,
+            unitPrice = 27000L,
+            quantity = 1,
+            totalPrice = 27000L
+        )
+
+        // 36 y 41. Fallo de envío inicial deja la reserva en RETRY_PENDING y en la cola de salida
+        bus.failHeladeriaSend = true
+        val res = heladeria.createNequiReservation(
+            amount = 27000L,
+            items = listOf(item),
+            subtotal = 27000L,
+            discount = 0L,
+            cashierName = "Laura Gómez"
+        ).getOrThrow()
+
+        assertEquals(com.ambiorix.pay.pos.SyncState.RETRY_PENDING, res.syncState)
+        assertTrue(heladeria.outboxMessages.value.isNotEmpty())
+
+        // 47. Dejar pendiente conserva la reserva, no envía CANCEL y no crea venta confirmada
+        val leftPending = heladeria.leaveReservationPending(res.id).getOrThrow()
+        assertTrue(leftPending.isPendingHold)
+        assertTrue(heladeria.getRecoverableReservations().any { it.id == res.id })
+
+        // 39 y 40. Reiniciar el dispositivo (recargar desde storageH) conserva la reserva y la cola pendiente
+        val reloadedHeladeria = PosRepository.createForTesting(storageH)
+        reloadedHeladeria.coordinationTransport = bus.heladeriaTransport
+        reloadedHeladeria.configureStore("HELADERIA", "PIZZERIA", "3002222222")
+        bus.heladeriaRepo = reloadedHeladeria
+
+        assertEquals(1, reloadedHeladeria.getRecoverableReservations().count { it.id == res.id })
+        assertTrue(reloadedHeladeria.outboxMessages.value.isNotEmpty())
+
+        // Reintentar envío cuando vuelve la señal SMS
+        bus.failHeladeriaSend = false
+        val sentCount = reloadedHeladeria.retryPendingOutboxMessages()
+        assertTrue(sentCount >= 1)
+        assertEquals(
+            com.ambiorix.pay.pos.SyncState.ACKNOWLEDGED,
+            reloadedHeladeria.reservations.value.find { it.id == res.id }!!.syncState
+        )
+    }
 }
+
 

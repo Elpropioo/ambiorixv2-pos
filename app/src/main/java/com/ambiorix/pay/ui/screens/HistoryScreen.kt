@@ -826,6 +826,45 @@ fun HistoryScreen(
                     AuditDetailRow("Canal / Red:", txn.nequiChannel ?: "Transferencia Directa")
                     AuditDetailRow("Cajera Responsable:", txn.cashierName)
 
+                    // Section 14: Manual Assignment from History ("Este local" / "El otro local")
+                    if (txn.status == "UNASSIGNED" || txn.status == "REQUIRES_REVIEW" || txn.status == "RECONCILIATION_PENDING") {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Asignación Manual de Local:",
+                            color = GoldPrimary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    repository.assignNotificationToLocalStore(txn.smsEventId ?: txn.id, activeCashier.name)
+                                    inspectingNequiTx = null
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Este local", color = DarkBackground, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            }
+                            Button(
+                                onClick = {
+                                    repository.assignNotificationToPeerStore(txn.smsEventId ?: txn.id, activeCashier.name)
+                                    inspectingNequiTx = null
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("El otro local", color = DarkBackground, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            }
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(16.dp))
                     Button(
                         onClick = { inspectingNequiTx = null },
@@ -1416,13 +1455,18 @@ private fun NequiTransactionCard(
                     modifier = Modifier.weight(1f)
                 )
 
+                val isPendingAssignment = transaction.status == "UNASSIGNED" ||
+                    transaction.status == "REQUIRES_REVIEW" ||
+                    transaction.status == "RECONCILIATION_PENDING"
+                val badgeColor = if (isPendingAssignment) GoldPrimary else SuccessGreen
+
                 Surface(
                     shape = RoundedCornerShape(4.dp),
-                    color = SuccessGreen.copy(alpha = 0.15f)
+                    color = badgeColor.copy(alpha = 0.15f)
                 ) {
                     Text(
-                        text = transaction.status,
-                        color = SuccessGreen,
+                        text = if (transaction.status == "UNASSIGNED") "PENDIENTE ASIGNACIÓN" else transaction.status,
+                        color = badgeColor,
                         fontSize = 8.sp,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)

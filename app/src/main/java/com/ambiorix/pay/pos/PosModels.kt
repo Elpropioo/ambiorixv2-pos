@@ -369,10 +369,15 @@ data class PaymentReservation(
     val deviceId: String = "dev-main",      // Device identifier
     val storeId: String,                    // "HELADERIA" or "PIZZERIA"
     val amount: Long,                       // Exact integer in COP
+    val subtotal: Long = amount,
+    val discount: Long = 0L,
+    val cashierName: String = "Laura Gómez",
     val createdAt: Long = System.currentTimeMillis(),
     val state: ReservationState = ReservationState.CREATED,
     val syncState: SyncState = SyncState.NOT_SENT,
     val protocolVersion: Int = 1,
+    val seq: Int = 1,
+    val isPendingHold: Boolean = false,     // True when cashier presses "Dejar pendiente"
     val notes: String? = null,
     val cancellationReason: String? = null,
     val matchedNotificationId: String? = null,
@@ -398,6 +403,7 @@ data class NequiBankNotification(
     val assignedAt: Long? = null,
     val linkedReservationId: String? = null,
     val linkedSaleId: String? = null,
+    val peerRecordId: String? = null,
     val syncState: SyncState = SyncState.NOT_SENT,
     val reviewReason: String? = null
 ) {
@@ -412,9 +418,9 @@ data class PendingOutboxMessage(
     val targetPhone: String,
     val relatedEntityId: String,            // reservationId or notificationId
     val createdAt: Long = System.currentTimeMillis(),
-    var retryCount: Int = 0,
-    var lastAttemptAt: Long = 0L,
-    var acknowledged: Boolean = false
+    val retryCount: Int = 0,
+    val lastAttemptAt: Long = 0L,
+    val acknowledged: Boolean = false
 )
 
 interface StoreCoordinationTransport {
@@ -424,6 +430,7 @@ interface StoreCoordinationTransport {
 object AmbiorixSmsProtocol {
     const val HEADER = "AMBIPAY"
     const val VERSION = 1
+    const val MAX_SMS_LENGTH = 320
 
     const val CMD_RESERVE = "RESERVE"
     const val CMD_RESERVE_ACK = "RESERVE_ACK"
@@ -439,6 +446,19 @@ object AmbiorixSmsProtocol {
     const val CMD_RECONCILE = "RECONCILE"
     const val CMD_ACK = "ACK"
 
+    private val VALID_COMMANDS = setOf(
+        CMD_RESERVE, CMD_RESERVE_ACK, CMD_CANCEL, CMD_CANCEL_ACK,
+        CMD_PAYMENT_CANDIDATE, CMD_COMPLETE, CMD_COMPLETE_ACK,
+        CMD_ASSIGN, CMD_ASSIGN_ACK, CMD_STATUS, CMD_STATUS_RESPONSE,
+        CMD_RECONCILE, CMD_ACK
+    )
+
+    private val ACK_COMMANDS = setOf(
+        CMD_RESERVE_ACK, CMD_CANCEL_ACK, CMD_COMPLETE_ACK, CMD_ASSIGN_ACK, CMD_ACK, CMD_STATUS_RESPONSE
+    )
+
+    fun isAckOrResponseCommand(cmd: String): Boolean = ACK_COMMANDS.contains(cmd)
+
     data class ParsedCommand(
         val header: String,
         val command: String,
@@ -446,8 +466,10 @@ object AmbiorixSmsProtocol {
         val fields: Map<String, String>,
         val rawMessage: String
     ) {
+        val msgId: String? get() = fields["msgId"] ?: fields["id"] ?: fields["tx"]
         val id: String? get() = fields["id"]
         val orderId: String? get() = fields["order"]
+        val saleId: String? get() = fields["sale"]
         val src: String? get() = fields["src"]
         val dst: String? get() = fields["dst"]
         val amount: Long? get() = fields["amount"]?.toLongOrNull()
@@ -455,10 +477,12 @@ object AmbiorixSmsProtocol {
         val ackMsgId: String? get() = fields["ackMsgId"]
         val reason: String? get() = fields["reason"]
         val state: String? get() = fields["state"]
+        val seq: Int get() = fields["seq"]?.toIntOrNull() ?: 1
         val timestamp: Long? get() = fields["ts"]?.toLongOrNull()
         val bankTimestamp: Long? get() = fields["bankts"]?.toLongOrNull()
         val payer: String? get() = fields["payer"]
         val bankRef: String? get() = fields["ref"]
+        val hmac: String? get() = fields["sig"]
     }
 
     fun isProtocolMessage(body: String): Boolean {
@@ -468,12 +492,15 @@ object AmbiorixSmsProtocol {
 
     fun parse(rawBody: String): ParsedCommand? {
         val trimmed = rawBody.trim()
+        if (trimmed.isEmpty() || trimmed.length > MAX_SMS_LENGTH) return null
         if (!isProtocolMessage(trimmed)) return null
         val parts = trimmed.split("|")
         if (parts.size < 3) return null
 
         val header = parts[0]
         val cmd = parts[1]
+        if (header == HEADER && !VALID_COMMANDS.contains(cmd)) return null
+
         var version = 1
         val fields = mutableMapOf<String, String>()
 
@@ -507,9 +534,13 @@ object AmbiorixSmsProtocol {
         orderId: String,
         src: String,
         amount: Long,
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        msgId: String = "M-RES-$id",
+        seq: Int = 1,
+        dst: String? = null
     ): String {
-        return "$HEADER|$CMD_RESERVE|v=$VERSION|id=$id|order=$orderId|src=$src|amount=$amount|currency=COP|ts=$timestamp"
+        val dstPart = if (!dst.isNullOrBlank()) "|dst=$dst" else ""
+        return "$HEADER|$CMD_RESERVE|v=$VERSION|msgId=$msgId|id=$id|order=$orderId|src=$src$dstPart|amount=$amount|currency=COP|seq=$seq|ts=$timestamp"
     }
 
     fun buildReserveAck(
@@ -517,9 +548,10 @@ object AmbiorixSmsProtocol {
         ackMsgId: String,
         src: String,
         dst: String,
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        msgId: String = "M-RACK-$id-$timestamp"
     ): String {
-        return "$HEADER|$CMD_RESERVE_ACK|v=$VERSION|id=$id|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
+        return "$HEADER|$CMD_RESERVE_ACK|v=$VERSION|msgId=$msgId|id=$id|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
     }
 
     fun buildCancel(
@@ -527,9 +559,13 @@ object AmbiorixSmsProtocol {
         src: String,
         amount: Long,
         reason: String = "USER_CANCEL",
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        msgId: String = "M-CAN-$id",
+        seq: Int = 2,
+        dst: String? = null
     ): String {
-        return "$HEADER|$CMD_CANCEL|v=$VERSION|id=$id|src=$src|amount=$amount|reason=$reason|ts=$timestamp"
+        val dstPart = if (!dst.isNullOrBlank()) "|dst=$dst" else ""
+        return "$HEADER|$CMD_CANCEL|v=$VERSION|msgId=$msgId|id=$id|src=$src$dstPart|amount=$amount|reason=$reason|seq=$seq|ts=$timestamp"
     }
 
     fun buildCancelAck(
@@ -537,9 +573,10 @@ object AmbiorixSmsProtocol {
         ackMsgId: String,
         src: String,
         dst: String,
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        msgId: String = "M-CACK-$id-$timestamp"
     ): String {
-        return "$HEADER|$CMD_CANCEL_ACK|v=$VERSION|id=$id|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
+        return "$HEADER|$CMD_CANCEL_ACK|v=$VERSION|msgId=$msgId|id=$id|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
     }
 
     fun buildPaymentCandidate(
@@ -547,9 +584,10 @@ object AmbiorixSmsProtocol {
         tx: String,
         src: String,
         amount: Long,
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        msgId: String = "M-CAND-$id-$tx"
     ): String {
-        return "$HEADER|$CMD_PAYMENT_CANDIDATE|v=$VERSION|id=$id|tx=$tx|src=$src|amount=$amount|ts=$timestamp"
+        return "$HEADER|$CMD_PAYMENT_CANDIDATE|v=$VERSION|msgId=$msgId|id=$id|tx=$tx|src=$src|amount=$amount|ts=$timestamp"
     }
 
     fun buildComplete(
@@ -557,19 +595,25 @@ object AmbiorixSmsProtocol {
         saleId: String,
         src: String,
         amount: Long,
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        msgId: String = "M-CMP-$id",
+        seq: Int = 3,
+        tx: String? = null
     ): String {
-        return "$HEADER|$CMD_COMPLETE|v=$VERSION|id=$id|sale=$saleId|src=$src|amount=$amount|ts=$timestamp"
+        val txPart = if (!tx.isNullOrBlank()) "|tx=$tx" else ""
+        return "$HEADER|$CMD_COMPLETE|v=$VERSION|msgId=$msgId|id=$id|sale=$saleId$txPart|src=$src|amount=$amount|seq=$seq|ts=$timestamp"
     }
+
 
     fun buildCompleteAck(
         id: String,
         ackMsgId: String,
         src: String,
         dst: String,
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        msgId: String = "M-CMPACK-$id-$timestamp"
     ): String {
-        return "$HEADER|$CMD_COMPLETE_ACK|v=$VERSION|id=$id|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
+        return "$HEADER|$CMD_COMPLETE_ACK|v=$VERSION|msgId=$msgId|id=$id|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
     }
 
     fun buildAssign(
@@ -579,11 +623,12 @@ object AmbiorixSmsProtocol {
         amount: Long,
         bankts: Long,
         payer: String? = null,
-        bankRef: String? = null
+        bankRef: String? = null,
+        msgId: String = "M-ASG-$tx-$src"
     ): String {
-        val base = "$HEADER|$CMD_ASSIGN|v=$VERSION|tx=$tx|src=$src|dst=$dst|amount=$amount|bankts=$bankts"
-        val p = if (!payer.isNullOrBlank()) "|payer=${payer.replace("|", " ")}" else ""
-        val r = if (!bankRef.isNullOrBlank()) "|ref=${bankRef.replace("|", " ")}" else ""
+        val base = "$HEADER|$CMD_ASSIGN|v=$VERSION|msgId=$msgId|tx=$tx|src=$src|dst=$dst|amount=$amount|bankts=$bankts"
+        val p = if (!payer.isNullOrBlank()) "|payer=${payer.replace("|", " ").replace("=", " ")}" else ""
+        val r = if (!bankRef.isNullOrBlank()) "|ref=${bankRef.replace("|", " ").replace("=", " ")}" else ""
         return base + p + r
     }
 
@@ -592,18 +637,20 @@ object AmbiorixSmsProtocol {
         ackMsgId: String,
         src: String,
         dst: String,
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        msgId: String = "M-ASGACK-$tx-$timestamp"
     ): String {
-        return "$HEADER|$CMD_ASSIGN_ACK|v=$VERSION|tx=$tx|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
+        return "$HEADER|$CMD_ASSIGN_ACK|v=$VERSION|msgId=$msgId|tx=$tx|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
     }
 
     fun buildStatus(
         id: String,
         src: String,
         dst: String,
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        msgId: String = "M-STS-$id-$timestamp"
     ): String {
-        return "$HEADER|$CMD_STATUS|v=$VERSION|id=$id|src=$src|dst=$dst|ts=$timestamp"
+        return "$HEADER|$CMD_STATUS|v=$VERSION|msgId=$msgId|id=$id|src=$src|dst=$dst|ts=$timestamp"
     }
 
     fun buildStatusResponse(
@@ -611,18 +658,33 @@ object AmbiorixSmsProtocol {
         state: String,
         src: String,
         dst: String,
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        msgId: String = "M-STSR-$id-$timestamp"
     ): String {
-        return "$HEADER|$CMD_STATUS_RESPONSE|v=$VERSION|id=$id|state=$state|src=$src|dst=$dst|ts=$timestamp"
+        return "$HEADER|$CMD_STATUS_RESPONSE|v=$VERSION|msgId=$msgId|id=$id|state=$state|src=$src|dst=$dst|ts=$timestamp"
+    }
+
+    fun buildReconcile(
+        id: String,
+        state: String,
+        src: String,
+        dst: String,
+        amount: Long,
+        timestamp: Long = System.currentTimeMillis(),
+        msgId: String = "M-REC-$id-$timestamp"
+    ): String {
+        return "$HEADER|$CMD_RECONCILE|v=$VERSION|msgId=$msgId|id=$id|state=$state|src=$src|dst=$dst|amount=$amount|ts=$timestamp"
     }
 
     fun buildAck(
         ackMsgId: String,
         src: String,
         dst: String,
-        timestamp: Long = System.currentTimeMillis()
+        timestamp: Long = System.currentTimeMillis(),
+        msgId: String = "M-ACK-$ackMsgId-$timestamp"
     ): String {
-        return "$HEADER|$CMD_ACK|v=$VERSION|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
+        return "$HEADER|$CMD_ACK|v=$VERSION|msgId=$msgId|ackMsgId=$ackMsgId|src=$src|dst=$dst|ts=$timestamp"
     }
 }
+
 

@@ -2101,34 +2101,37 @@ fun PosMainScreen(
     // Modal: Checkout Payment
     if (showCheckoutModal) {
         var checkoutError by remember { mutableStateOf<String?>(null) }
+        var activeReservationId by remember { mutableStateOf<String?>(null) }
+        val allReservations by posRepository.reservations.collectAsState()
+        val activeReservation = remember(allReservations, activeReservationId) {
+            allReservations.find { it.id == activeReservationId }
+        }
+        val recoverableReservations = remember(allReservations) {
+            posRepository.getRecoverableReservations().filter { it.isPendingHold }
+        }
+
+        // Automatically complete UI flow if bank notification matched and completed the active reservation
+        LaunchedEffect(activeReservation?.state) {
+            if (activeReservation != null && activeReservation.state == ReservationState.COMPLETED) {
+                onPaymentSuccess(activeReservation.amount, "Pago Nequi Verificado", "Nequi")
+                cart.clear()
+                activeReservationId = null
+                showCheckoutModal = false
+            }
+        }
 
         AlertDialog(
             onDismissRequest = {
-                showCheckoutModal = false
-                checkoutError = null
+                if (activeReservation == null || activeReservation.state != ReservationState.ACTIVE) {
+                    showCheckoutModal = false
+                    checkoutError = null
+                }
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        checkoutError = null
-                        if (checkoutMethod == "CASH") {
-                            val res = posRepository.completeSale(
-                                items = cart.toList(),
-                                subtotal = cartSubtotal,
-                                discount = cartDiscount,
-                                total = cartTotal,
-                                paymentMethod = "CASH",
-                                cashierName = activeCashier.name
-                            )
-                            if (res.isSuccess) {
-                                onPaymentSuccess(cartTotal, "Venta en Efectivo", "Caja Salon de Onces")
-                                cart.clear()
-                                showCheckoutModal = false
-                            } else {
-                                checkoutError = res.exceptionOrNull()?.message ?: "Error al completar venta"
-                            }
-                        } else {
-                            posRepository.sendProtocolCommand("RESERVE", cartTotal)
+                if (activeReservation != null && (activeReservation.state == ReservationState.ACTIVE || activeReservation.state == ReservationState.PAYMENT_CANDIDATE)) {
+                    // Explicit auditable manual confirmation by cashier (Section 17)
+                    Button(
+                        onClick = {
                             val res = posRepository.completeSale(
                                 items = cart.toList(),
                                 subtotal = cartSubtotal,
@@ -2136,85 +2139,230 @@ fun PosMainScreen(
                                 total = cartTotal,
                                 paymentMethod = "NEQUI",
                                 cashierName = activeCashier.name,
-                                senderName = "SANTIAGO ALEJANDRO MORGAN AVILA",
-                                channel = "Bre-B"
+                                senderName = "Verificación Manual (${activeCashier.name})",
+                                channel = "Manual Auditado",
+                                saleId = "sale-${activeReservation.id}"
                             )
                             if (res.isSuccess) {
-                                onPaymentSuccess(cartTotal, "SANTIAGO ALEJANDRO MORGAN AVILA", "Nequi · Bre-B")
+                                onPaymentSuccess(cartTotal, "Verificación Manual", "Nequi")
                                 cart.clear()
+                                activeReservationId = null
                                 showCheckoutModal = false
                             } else {
-                                checkoutError = res.exceptionOrNull()?.message ?: "Error al completar venta"
+                                checkoutError = res.exceptionOrNull()?.message
                             }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary)
-                ) {
-                    Text("Confirmar Cobro", color = DarkBackground, fontWeight = FontWeight.Bold)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary)
+                    ) {
+                        Text("Confirmación Manual Verificada", color = DarkBackground, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            checkoutError = null
+                            if (checkoutMethod == "CASH") {
+                                val res = if (activeReservationId != null) {
+                                    posRepository.completeCashSaleFromReservation(activeReservationId!!, activeCashier.name)
+                                } else {
+                                    posRepository.completeSale(
+                                        items = cart.toList(),
+                                        subtotal = cartSubtotal,
+                                        discount = cartDiscount,
+                                        total = cartTotal,
+                                        paymentMethod = "CASH",
+                                        cashierName = activeCashier.name
+                                    )
+                                }
+                                if (res.isSuccess) {
+                                    onPaymentSuccess(cartTotal, "Venta en Efectivo", "Caja Salon de Onces")
+                                    cart.clear()
+                                    activeReservationId = null
+                                    showCheckoutModal = false
+                                } else {
+                                    checkoutError = res.exceptionOrNull()?.message ?: "Error al completar venta"
+                                }
+                            } else {
+                                // Create Nequi reservation and enter waiting state (Sections 4 & 8: never mark sale paid on reservation creation!)
+                                val resResult = posRepository.createNequiReservation(
+                                    amount = cartTotal,
+                                    items = cart.toList(),
+                                    subtotal = cartSubtotal,
+                                    discount = cartDiscount,
+                                    cashierName = activeCashier.name
+                                )
+                                if (resResult.isSuccess) {
+                                    activeReservationId = resResult.getOrThrow().id
+                                } else {
+                                    checkoutError = resResult.exceptionOrNull()?.message ?: "Error al crear reserva Nequi"
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary)
+                    ) {
+                        Text(if (checkoutMethod == "NEQUI") "Iniciar Espera Nequi" else "Confirmar Cobro", color = DarkBackground, fontWeight = FontWeight.Bold)
+                    }
                 }
             },
             dismissButton = {
-                TextButton(onClick = {
-                    showCheckoutModal = false
-                    checkoutError = null
-                }) {
-                    Text("Cancelar", color = TextGray)
+                if (activeReservation == null) {
+                    TextButton(onClick = {
+                        showCheckoutModal = false
+                        checkoutError = null
+                    }) {
+                        Text("Cerrar", color = TextGray)
+                    }
                 }
             },
             title = {
-                Text("Finalizar Cobro: ${formatCOP(cartTotal)}", color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text(
+                    text = if (activeReservation != null) "Esperando Pago Nequi: ${formatCOP(activeReservation.amount)}" else "Finalizar Cobro: ${formatCOP(cartTotal)}",
+                    color = TextWhite,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
+                )
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Cajera a cargo: ${activeCashier.name}", color = GoldPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
 
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { checkoutMethod = "NEQUI" },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (checkoutMethod == "NEQUI") GoldPrimary else DarkBackground
-                            ),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Nequi", color = if (checkoutMethod == "NEQUI") DarkBackground else TextWhite, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-
-                        Button(
-                            onClick = { checkoutMethod = "CASH" },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (checkoutMethod == "CASH") GoldPrimary else DarkBackground
-                            ),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Efectivo", color = if (checkoutMethod == "CASH") DarkBackground else TextWhite, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    if (checkoutMethod == "NEQUI") {
-                        Text(
-                            text = if (settings.peerStoreEnabled && settings.peerStorePhone.isNotEmpty()) {
-                                "Se enviará SMS de reserva a ${settings.peerStoreName} (${settings.peerStorePhone}) con 120s de exclusividad."
-                            } else {
-                                "Cobro directo Nequi en pantalla con anuncio de voz."
-                            },
-                            color = TextGray,
-                            fontSize = 11.sp
-                        )
-                    } else {
-                        OutlinedTextField(
-                            value = cashReceivedInput,
-                            onValueChange = { cashReceivedInput = it },
-                            label = { Text("Efectivo Recibido (COP)") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = GoldPrimary,
-                                unfocusedTextColor = GoldPrimary,
-                                focusedBorderColor = GoldPrimary
-                            ),
+                    if (activeReservation != null && (activeReservation.state == ReservationState.ACTIVE || activeReservation.state == ReservationState.PAYMENT_CANDIDATE)) {
+                        // Section 8: Waiting Screen inside existing modal design
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = DarkBackground,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, GoldPrimary.copy(alpha = 0.5f)),
                             modifier = Modifier.fillMaxWidth()
-                        )
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("⏳ Estado: ESPERANDO NOTIFICACIÓN BANCARIA", color = GoldPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("Valor exacto esperado: ${formatCOP(activeReservation.amount)}", color = TextWhite, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("ID Reserva: ${activeReservation.id}", color = TextGray, fontSize = 10.sp)
+                                Text(
+                                    text = "Sincronización otro local: ${
+                                        when (activeReservation.syncState) {
+                                            SyncState.ACKNOWLEDGED -> "Sincronizada (ACK recibido)"
+                                            SyncState.SENT -> "SMS enviado (esperando ACK)"
+                                            SyncState.RETRY_PENDING -> "Sincronización pendiente (reintentando SMS)"
+                                            else -> activeReservation.syncState.name
+                                        }
+                                    }",
+                                    color = if (activeReservation.syncState == SyncState.ACKNOWLEDGED) SuccessGreen else GoldPrimary,
+                                    fontSize = 10.sp
+                                )
+                                Text("Recepción notificación bancaria: En espera de SMS Nequi...", color = TextGray, fontSize = 10.sp)
+                            }
+                        }
+
+                        // Section 9, 10, 11 Buttons: Dejar pendiente, Cancelar, Cambiar a efectivo
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Button(
+                                onClick = {
+                                    posRepository.leaveReservationPending(activeReservation.id)
+                                    activeReservationId = null
+                                    showCheckoutModal = false
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = DarkBackground),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Dejar pendiente", color = GoldPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            Button(
+                                onClick = {
+                                    posRepository.cancelNequiReservation(activeReservation.id, "USER_CANCEL")
+                                    activeReservationId = null
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = DangerRed),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Cancelar", color = TextWhite, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Button(
+                            onClick = {
+                                posRepository.switchNequiReservationToCash(activeReservation.id)
+                                checkoutMethod = "CASH"
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Cambiar a efectivo (conservando orden)", color = DarkBackground, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { checkoutMethod = "NEQUI" },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (checkoutMethod == "NEQUI") GoldPrimary else DarkBackground
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Nequi", color = if (checkoutMethod == "NEQUI") DarkBackground else TextWhite, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            Button(
+                                onClick = { checkoutMethod = "CASH" },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (checkoutMethod == "CASH") GoldPrimary else DarkBackground
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Efectivo", color = if (checkoutMethod == "CASH") DarkBackground else TextWhite, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        if (checkoutMethod == "NEQUI") {
+                            Text(
+                                text = "Al confirmar, se creará una reserva Nequi coordinada por SMS y se abrirá la espera de notificación bancaria.",
+                                color = TextGray,
+                                fontSize = 11.sp
+                            )
+                            if (recoverableReservations.isNotEmpty()) {
+                                Text("Operaciones Nequi pendientes recuperables:", color = GoldPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                recoverableReservations.take(2).forEach { pendingRes ->
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = DarkBackground,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                val restored = posRepository.recoverReservationCart(pendingRes.id)
+                                                if (restored.isNotEmpty()) {
+                                                    cart.clear()
+                                                    cart.addAll(restored)
+                                                }
+                                                activeReservationId = pendingRes.id
+                                            }
+                                    ) {
+                                        Text(
+                                            text = "Recuperar ${pendingRes.id} (${formatCOP(pendingRes.amount)})",
+                                            color = GoldPrimary,
+                                            fontSize = 10.sp,
+                                            modifier = Modifier.padding(6.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            OutlinedTextField(
+                                value = cashReceivedInput,
+                                onValueChange = { cashReceivedInput = it },
+                                label = { Text("Efectivo Recibido (COP)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = GoldPrimary,
+                                    unfocusedTextColor = GoldPrimary,
+                                    focusedBorderColor = GoldPrimary
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
 
                     if (checkoutError != null) {

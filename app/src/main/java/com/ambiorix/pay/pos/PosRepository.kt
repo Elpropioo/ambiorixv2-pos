@@ -93,6 +93,48 @@ class PosRepository(
     // Processed Sale IDs for Idempotency
     private val _processedSaleIds = mutableSetOf<String>()
 
+    // Processed Protocol Message IDs for SMS Idempotency
+    private val _processedProtocolMsgIds = mutableSetOf<String>()
+
+    // Multi-Reservation & Bank Notification Coordination State (Sections 4-21)
+    private val _reservations = MutableStateFlow<List<PaymentReservation>>(emptyList())
+    val reservations: StateFlow<List<PaymentReservation>> = _reservations.asStateFlow()
+
+    private val _bankNotifications = MutableStateFlow<List<NequiBankNotification>>(emptyList())
+    val bankNotifications: StateFlow<List<NequiBankNotification>> = _bankNotifications.asStateFlow()
+
+    private val _outboxMessages = MutableStateFlow<List<PendingOutboxMessage>>(emptyList())
+    val outboxMessages: StateFlow<List<PendingOutboxMessage>> = _outboxMessages.asStateFlow()
+
+    // Pending remote assignments when ASSIGN arrives before bank notification (Section 14.2)
+    private val _pendingRemoteAssignments = MutableStateFlow<List<AmbiorixSmsProtocol.ParsedCommand>>(emptyList())
+    val pendingRemoteAssignments: StateFlow<List<AmbiorixSmsProtocol.ParsedCommand>> = _pendingRemoteAssignments.asStateFlow()
+
+    // Store Identity Configuration (HELADERIA vs PIZZERIA)
+    private var configuredLocalStoreId: String = "HELADERIA"
+    private var configuredPeerStoreId: String = "PIZZERIA"
+    private var configuredPeerPhone: String = "3000000000"
+    private var configuredPeerEnabled: Boolean = true
+
+    // Pluggable Transport Layer (Section 21: Habla y Escucha)
+    var coordinationTransport: StoreCoordinationTransport = object : StoreCoordinationTransport {
+        override fun sendCommand(payload: String, targetPhone: String): Boolean {
+            if (targetPhone.isBlank()) return false
+            return try {
+                if (context != null) {
+                    val smsManager: SmsManager = context.getSystemService(SmsManager::class.java)
+                        ?: SmsManager.getDefault()
+                    smsManager.sendTextMessage(targetPhone, null, payload, null, null)
+                    true
+                } else {
+                    false
+                }
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+
     // Current Cash Shift
     private val _cashShift = MutableStateFlow(
         CashShift(
@@ -117,6 +159,10 @@ class PosRepository(
 
     private val _unassignedPayments = MutableStateFlow<List<SaleRecord>>(emptyList())
     val unassignedPayments: StateFlow<List<SaleRecord>> = _unassignedPayments.asStateFlow()
+
+    private fun nextUniqueId(prefix: String): String {
+        return "$prefix-${System.currentTimeMillis()}-${idSequence.incrementAndGet()}"
+    }
 
     init {
         loadData()
@@ -160,7 +206,7 @@ class PosRepository(
             return Result.failure(IllegalArgumentException("El nombre de la cajera no puede estar vacío"))
         }
         val newCashier = CashierProfile(
-            id = "cashier-${System.currentTimeMillis()}",
+            id = nextUniqueId("cashier"),
             name = trimmed,
             pin = pin
         )
@@ -186,7 +232,7 @@ class PosRepository(
         if (trimmed.isEmpty()) {
             return Result.failure(IllegalArgumentException("El nombre de la categoría no puede estar vacío"))
         }
-        val id = "cat-${System.currentTimeMillis()}"
+        val id = nextUniqueId("cat")
         val newCat = Category(
             id = id,
             name = trimmed,
@@ -270,7 +316,7 @@ class PosRepository(
         if (trimmed.isEmpty()) {
             return Result.failure(IllegalArgumentException("El nombre del ingrediente es obligatorio"))
         }
-        val id = "ing-${System.currentTimeMillis()}"
+        val id = nextUniqueId("ing")
         val ing = Ingredient(
             id = id,
             name = trimmed,
@@ -479,7 +525,7 @@ class PosRepository(
         val catExists = _categories.value.any { it.id == categoryId }
         val finalCategoryId = if (catExists) categoryId else getDefaultCategory().id
 
-        val id = "prod-${System.currentTimeMillis()}"
+        val id = nextUniqueId("prod")
         val now = System.currentTimeMillis()
 
         // Calculate estimated cost from recipe if recipe provided and baseCost is 0
@@ -837,7 +883,7 @@ class PosRepository(
     ): InventoryMovement {
         val now = System.currentTimeMillis()
         val movement = InventoryMovement(
-            id = "mov-$now-${(1..999).random()}",
+            id = nextUniqueId("mov"),
             itemId = itemId,
             itemName = itemName,
             itemType = itemType,
@@ -945,12 +991,15 @@ class PosRepository(
         channel: String? = null,
         saleId: String? = null
     ): Result<SaleRecord> {
-        val finalSaleId = saleId ?: "sale-${System.currentTimeMillis()}"
+        val finalSaleId = saleId ?: nextUniqueId("sale")
 
-        // Idempotency check: prevent duplicate deduction
-        if (_processedSaleIds.contains(finalSaleId)) {
+        // Idempotency check: prevent duplicate deduction & duplicate sale registration
+        if (_processedSaleIds.contains(finalSaleId) || _sales.value.any { it.id == finalSaleId }) {
             val existing = _sales.value.find { it.id == finalSaleId }
-            if (existing != null) return Result.success(existing)
+            if (existing != null) {
+                _processedSaleIds.add(finalSaleId)
+                return Result.success(existing)
+            }
         }
 
         val (requiredIngredients, requiredProducts) = resolveSaleRequirements(items)
@@ -1347,8 +1396,17 @@ class PosRepository(
     ): PaymentTransaction {
         val finalDate = dateStr?.let { getNormalizedDateKey(it) } ?: getTodayDateKey()
         val finalTime = time ?: getCurrentTime()
+
+        // Idempotency guard: prevent duplicate payment transaction for the same saleId + method
+        if (saleId != null && entryType == "SALE_PAYMENT") {
+            val existingForSale = _paymentTransactions.value.find {
+                it.saleId == saleId && it.method == method && it.entryType == "SALE_PAYMENT"
+            }
+            if (existingForSale != null) return existingForSale
+        }
+
         val tx = PaymentTransaction(
-            id = "tx-${System.currentTimeMillis()}-${(100..999).random()}",
+            id = nextUniqueId("tx"),
             method = method,
             amount = amount,
             dateStr = finalDate,
@@ -1360,7 +1418,7 @@ class PosRepository(
             cashierName = cashierName,
             payerNameOrPhone = payerNameOrPhone,
             bankTransactionRef = bankTransactionRef,
-            smsEventId = smsEventId ?: if (method == "NEQUI") "SMS-${System.currentTimeMillis()}" else null,
+            smsEventId = smsEventId ?: if (method == "NEQUI") nextUniqueId("SMS") else null,
             originInstallation = originInstallation,
             nequiChannel = nequiChannel,
             entryType = entryType,
@@ -1390,7 +1448,7 @@ class PosRepository(
         }
         val finalDate = dateStr?.let { getNormalizedDateKey(it) } ?: getTodayDateKey()
         val expense = ExpenseRecord(
-            id = "exp-${System.currentTimeMillis()}-${(100..999).random()}",
+            id = nextUniqueId("exp"),
             amount = amount,
             category = category.trim(),
             description = description.trim(),
@@ -1598,6 +1656,8 @@ class PosRepository(
         } else {
             defaultSales()
         }
+        _processedSaleIds.clear()
+        _processedSaleIds.addAll(_sales.value.map { it.id })
 
         // Load Expenses
         val expensesJson = storage.getString(KEY_EXPENSES, null)
@@ -1613,6 +1673,36 @@ class PosRepository(
             decodePaymentTransactions(paymentsJson)
         } else {
             defaultPaymentTransactions()
+        }
+
+        // Load Store Configuration
+        storage.getString(KEY_LOCAL_STORE_ID, null)?.takeIf { it.isNotBlank() }?.let { configuredLocalStoreId = it }
+        storage.getString(KEY_PEER_STORE_ID, null)?.takeIf { it.isNotBlank() }?.let { configuredPeerStoreId = it }
+        storage.getString(KEY_PEER_PHONE, null)?.takeIf { it.isNotBlank() }?.let { configuredPeerPhone = it }
+
+        // Load Reservations
+        val resJson = storage.getString(KEY_RESERVATIONS, null)
+        if (!resJson.isNullOrBlank()) {
+            _reservations.value = decodeReservations(resJson)
+        }
+
+        // Load Bank Notifications
+        val notifJson = storage.getString(KEY_BANK_NOTIFICATIONS, null)
+        if (!notifJson.isNullOrBlank()) {
+            _bankNotifications.value = decodeBankNotifications(notifJson)
+        }
+
+        // Load Outbox Queue
+        val outboxJson = storage.getString(KEY_OUTBOX_MESSAGES, null)
+        if (!outboxJson.isNullOrBlank()) {
+            _outboxMessages.value = decodeOutboxMessages(outboxJson)
+        }
+
+        // Load Processed Protocol Message IDs
+        val procMsgs = storage.getString(KEY_PROCESSED_MSG_IDS, null)
+        _processedProtocolMsgIds.clear()
+        if (!procMsgs.isNullOrBlank()) {
+            _processedProtocolMsgIds.addAll(procMsgs.split(",").filter { it.isNotBlank() })
         }
     }
 
@@ -1647,6 +1737,1515 @@ class PosRepository(
 
     fun savePaymentTransactions() {
         storage.putString(KEY_PAYMENT_TRANSACTIONS, encodePaymentTransactions(_paymentTransactions.value.take(500)))
+    }
+
+    fun saveReservations() {
+        storage.putString(KEY_RESERVATIONS, encodeReservations(_reservations.value.take(300)))
+    }
+
+    fun saveBankNotifications() {
+        storage.putString(KEY_BANK_NOTIFICATIONS, encodeBankNotifications(_bankNotifications.value.take(300)))
+    }
+
+    fun saveOutboxMessages() {
+        storage.putString(KEY_OUTBOX_MESSAGES, encodeOutboxMessages(_outboxMessages.value.take(300)))
+    }
+
+    private fun saveProcessedProtocolMsgIds() {
+        storage.putString(KEY_PROCESSED_MSG_IDS, _processedProtocolMsgIds.take(500).joinToString(","))
+    }
+
+    // =========================================================================
+    // 9. NEQUI RESERVATIONS, P2P SMS COORDINATION & MANUAL ASSIGNMENT (Sections 4-21)
+    // =========================================================================
+
+    fun configureStore(
+        localStoreId: String,
+        peerStoreId: String,
+        peerPhone: String = "3000000000",
+        enabled: Boolean = true
+    ) {
+        configuredLocalStoreId = localStoreId.trim().uppercase()
+        configuredPeerStoreId = peerStoreId.trim().uppercase()
+        configuredPeerPhone = peerPhone.trim()
+        configuredPeerEnabled = enabled
+        storage.putString(KEY_LOCAL_STORE_ID, configuredLocalStoreId)
+        storage.putString(KEY_PEER_STORE_ID, configuredPeerStoreId)
+        storage.putString(KEY_PEER_PHONE, configuredPeerPhone)
+    }
+
+    fun getLocalStoreId(): String {
+        val fromSettings = settingsRepo?.getSettings()?.localStoreId
+        return if (!fromSettings.isNullOrBlank() && fromSettings != "STORE_01") {
+            fromSettings.uppercase()
+        } else {
+            configuredLocalStoreId
+        }
+    }
+
+    fun getPeerStoreId(): String {
+        val fromSettings = settingsRepo?.getSettings()?.peerStoreId
+        return if (!fromSettings.isNullOrBlank() && fromSettings != "STORE_02") {
+            fromSettings.uppercase()
+        } else {
+            configuredPeerStoreId
+        }
+    }
+
+    fun getPeerPhone(): String {
+        val fromSettings = settingsRepo?.getSettings()?.peerStorePhone
+        return if (!fromSettings.isNullOrBlank()) fromSettings.trim() else configuredPeerPhone
+    }
+
+    @Synchronized
+    fun createNequiReservation(
+        amount: Long,
+        orderId: String = nextUniqueId("ORD"),
+        items: List<CartItem> = emptyList(),
+        subtotal: Long = amount,
+        discount: Long = 0L,
+        cashierName: String = _activeCashier.value.name,
+        reservationId: String? = null
+    ): Result<PaymentReservation> {
+        if (amount <= 0L) {
+            return Result.failure(IllegalArgumentException("El valor de la reserva debe ser mayor a 0"))
+        }
+
+        val storePrefix = getLocalStoreId().take(1).ifEmpty { "H" }
+        val finalResId = reservationId ?: "$storePrefix-${System.currentTimeMillis()}-${idSequence.incrementAndGet()}"
+
+        // Idempotent if reservationId already exists
+        val existing = _reservations.value.find { it.id == finalResId }
+        if (existing != null) {
+            return Result.success(existing)
+        }
+
+        val now = System.currentTimeMillis()
+        val cartJson = encodeCartItemsList(items)
+
+        // 1. Save reservation persistently BEFORE attempting SMS send (Section 4)
+        val initialRes = PaymentReservation(
+            id = finalResId,
+            orderId = orderId,
+            deviceId = "dev-${getLocalStoreId().lowercase()}",
+            storeId = getLocalStoreId(),
+            amount = amount,
+            subtotal = subtotal,
+            discount = discount,
+            cashierName = cashierName,
+            createdAt = now,
+            state = ReservationState.ACTIVE,
+            syncState = SyncState.PENDING_SEND,
+            protocolVersion = AmbiorixSmsProtocol.VERSION,
+            seq = 1,
+            isPendingHold = false,
+            cartSnapshotJson = cartJson
+        )
+
+        _reservations.value = listOf(initialRes) + _reservations.value
+        saveReservations()
+
+        // 2. Build RESERVE SMS and dispatch via transport
+        val msgId = "M-RES-$finalResId"
+        val payload = AmbiorixSmsProtocol.buildReserve(
+            id = finalResId,
+            orderId = orderId,
+            src = getLocalStoreId(),
+            amount = amount,
+            timestamp = now,
+            msgId = msgId,
+            seq = 1,
+            dst = getPeerStoreId()
+        )
+
+        val sent = enqueueAndDispatchOutbox(
+            msgId = msgId,
+            command = AmbiorixSmsProtocol.CMD_RESERVE,
+            payload = payload,
+            relatedEntityId = finalResId
+        )
+
+        val currentRes = _reservations.value.find { it.id == finalResId } ?: initialRes
+        val updatedSyncState = when {
+            currentRes.syncState == SyncState.ACKNOWLEDGED -> SyncState.ACKNOWLEDGED
+            sent -> SyncState.SENT
+            else -> SyncState.RETRY_PENDING
+        }
+        val updatedRes = currentRes.copy(
+            syncState = updatedSyncState,
+            lastAttemptTimestamp = now,
+            retryCount = if (sent) 0 else 1
+        )
+        updateReservationInList(updatedRes)
+        _activeOpId.value = finalResId
+        _protocolState.value = ProtocolState.WAITING_PAYMENT
+
+        return Result.success(updatedRes)
+    }
+
+    @Synchronized
+    fun leaveReservationPending(reservationId: String): Result<PaymentReservation> {
+        val existing = _reservations.value.find { it.id == reservationId }
+            ?: return Result.failure(NoSuchElementException("Reserva no encontrada"))
+
+        if (existing.state == ReservationState.CANCELLED || existing.state == ReservationState.REPLACED_BY_CASH) {
+            return Result.failure(IllegalStateException("No se puede dejar pendiente una reserva cancelada"))
+        }
+
+        val updated = existing.copy(isPendingHold = true)
+        updateReservationInList(updated)
+        return Result.success(updated)
+    }
+
+    fun getRecoverableReservations(): List<PaymentReservation> {
+        val localStore = getLocalStoreId()
+        return _reservations.value.filter {
+            it.storeId == localStore &&
+                (it.state == ReservationState.ACTIVE ||
+                    it.state == ReservationState.PAYMENT_CANDIDATE ||
+                    it.state == ReservationState.CREATED ||
+                    it.state == ReservationState.SENT ||
+                    it.state == ReservationState.ACKNOWLEDGED)
+        }
+    }
+
+    fun recoverReservationCart(reservationId: String): List<CartItem> {
+        val res = _reservations.value.find { it.id == reservationId } ?: return emptyList()
+        val json = res.cartSnapshotJson ?: return emptyList()
+        return decodeCartItemsList(json)
+    }
+
+    @Synchronized
+    fun cancelNequiReservation(
+        reservationId: String,
+        reason: String = "USER_CANCEL"
+    ): Result<PaymentReservation> {
+        val existing = _reservations.value.find { it.id == reservationId }
+            ?: return Result.failure(NoSuchElementException("Reserva no encontrada"))
+
+        if (existing.state == ReservationState.COMPLETED) {
+            return Result.failure(IllegalStateException("La reserva ya fue completada"))
+        }
+        if (existing.state == ReservationState.CANCELLED) {
+            return Result.success(existing)
+        }
+
+        val now = System.currentTimeMillis()
+        val nextSeq = existing.seq + 1
+        val cancelled = existing.copy(
+            state = ReservationState.CANCELLED,
+            cancellationReason = reason,
+            seq = nextSeq,
+            syncState = SyncState.PENDING_SEND,
+            isPendingHold = false
+        )
+        updateReservationInList(cancelled)
+
+        val msgId = "M-CAN-$reservationId-$nextSeq"
+        val payload = AmbiorixSmsProtocol.buildCancel(
+            id = reservationId,
+            src = getLocalStoreId(),
+            amount = existing.amount,
+            reason = reason,
+            timestamp = now,
+            msgId = msgId,
+            seq = nextSeq,
+            dst = getPeerStoreId()
+        )
+
+        val sent = enqueueAndDispatchOutbox(
+            msgId = msgId,
+            command = AmbiorixSmsProtocol.CMD_CANCEL,
+            payload = payload,
+            relatedEntityId = reservationId
+        )
+
+        val currentAfterCancel = _reservations.value.find { it.id == reservationId } ?: cancelled
+        val finalRes = currentAfterCancel.copy(
+            syncState = when {
+                currentAfterCancel.syncState == SyncState.ACKNOWLEDGED -> SyncState.ACKNOWLEDGED
+                sent -> SyncState.SENT
+                else -> SyncState.RETRY_PENDING
+            },
+            lastAttemptTimestamp = now
+        )
+        updateReservationInList(finalRes)
+        if (_activeOpId.value == reservationId) {
+            _protocolState.value = ProtocolState.CANCELLED
+        }
+        return Result.success(finalRes)
+    }
+
+    @Synchronized
+    fun switchNequiReservationToCash(reservationId: String): Result<PaymentReservation> {
+        val existing = _reservations.value.find { it.id == reservationId }
+            ?: return Result.failure(NoSuchElementException("Reserva no encontrada"))
+
+        if (existing.state == ReservationState.COMPLETED) {
+            return Result.failure(IllegalStateException("La reserva ya fue completada por Nequi"))
+        }
+        if (existing.state == ReservationState.REPLACED_BY_CASH) {
+            return Result.success(existing)
+        }
+
+        val now = System.currentTimeMillis()
+        val nextSeq = existing.seq + 1
+        val replaced = existing.copy(
+            state = ReservationState.REPLACED_BY_CASH,
+            cancellationReason = "REPLACED_BY_CASH",
+            seq = nextSeq,
+            syncState = SyncState.PENDING_SEND,
+            isPendingHold = false
+        )
+        updateReservationInList(replaced)
+
+        val msgId = "M-CAN-$reservationId-$nextSeq"
+        val payload = AmbiorixSmsProtocol.buildCancel(
+            id = reservationId,
+            src = getLocalStoreId(),
+            amount = existing.amount,
+            reason = "REPLACED_BY_CASH",
+            timestamp = now,
+            msgId = msgId,
+            seq = nextSeq,
+            dst = getPeerStoreId()
+        )
+
+        val sent = enqueueAndDispatchOutbox(
+            msgId = msgId,
+            command = AmbiorixSmsProtocol.CMD_CANCEL,
+            payload = payload,
+            relatedEntityId = reservationId
+        )
+
+        val currentAfterSwitch = _reservations.value.find { it.id == reservationId } ?: replaced
+        val finalRes = currentAfterSwitch.copy(
+            syncState = when {
+                currentAfterSwitch.syncState == SyncState.ACKNOWLEDGED -> SyncState.ACKNOWLEDGED
+                sent -> SyncState.SENT
+                else -> SyncState.RETRY_PENDING
+            },
+            lastAttemptTimestamp = now
+        )
+        updateReservationInList(finalRes)
+        return Result.success(finalRes)
+    }
+
+    @Synchronized
+    fun completeCashSaleFromReservation(
+        reservationId: String,
+        cashierName: String = _activeCashier.value.name
+    ): Result<SaleRecord> {
+        val resAfterSwitch = switchNequiReservationToCash(reservationId).getOrElse {
+            val current = _reservations.value.find { r -> r.id == reservationId }
+                ?: return Result.failure(it)
+            current
+        }
+
+        val deterministicSaleId = "sale-cash-$reservationId"
+        if (_processedSaleIds.contains(deterministicSaleId)) {
+            val existingSale = _sales.value.find { it.id == deterministicSaleId }
+            if (existingSale != null) return Result.success(existingSale)
+        }
+
+        val items = recoverReservationCart(reservationId)
+        val saleResult = completeSale(
+            items = items,
+            subtotal = resAfterSwitch.subtotal,
+            discount = resAfterSwitch.discount,
+            total = resAfterSwitch.amount,
+            paymentMethod = "CASH",
+            cashierName = cashierName,
+            saleId = deterministicSaleId
+        )
+
+        if (saleResult.isSuccess) {
+            val sale = saleResult.getOrThrow()
+            updateReservationInList(resAfterSwitch.copy(saleId = sale.id))
+        }
+        return saleResult
+    }
+
+    @Synchronized
+    fun retryPendingOutboxMessages(): Int {
+        var successCount = 0
+        val now = System.currentTimeMillis()
+        val updatedOutbox = _outboxMessages.value.map { msg ->
+            if (msg.acknowledged) {
+                msg
+            } else {
+                val sent = coordinationTransport.sendCommand(msg.payload, msg.targetPhone)
+                if (sent) {
+                    successCount++
+                    // Update related reservation or notification syncState from RETRY_PENDING to SENT
+                    _reservations.value.find { it.id == msg.relatedEntityId }?.let { r ->
+                        if (r.syncState == SyncState.RETRY_PENDING || r.syncState == SyncState.PENDING_SEND || r.syncState == SyncState.NOT_SENT) {
+                            updateReservationInList(r.copy(syncState = SyncState.SENT, lastAttemptTimestamp = now, retryCount = msg.retryCount + 1))
+                        }
+                    }
+                    _bankNotifications.value.find { it.id == msg.relatedEntityId }?.let { n ->
+                        if (n.syncState == SyncState.RETRY_PENDING || n.syncState == SyncState.PENDING_SEND || n.syncState == SyncState.NOT_SENT) {
+                            updateBankNotificationInList(n.copy(syncState = SyncState.SENT))
+                        }
+                    }
+                    msg.copy(retryCount = msg.retryCount + 1, lastAttemptAt = now)
+                } else {
+                    msg.copy(retryCount = msg.retryCount + 1, lastAttemptAt = now)
+                }
+            }
+        }
+        _outboxMessages.value = updatedOutbox
+        saveOutboxMessages()
+        return successCount
+    }
+
+    @Synchronized
+    fun processIncomingCoordinationSms(rawBody: String, senderPhone: String = getPeerPhone()): Boolean {
+        val parsed = AmbiorixSmsProtocol.parse(rawBody) ?: return false
+
+        // Validate origin store is not self
+        if (parsed.src != null && parsed.src.equals(getLocalStoreId(), ignoreCase = true) && !AmbiorixSmsProtocol.isAckOrResponseCommand(parsed.command)) {
+            return false
+        }
+
+        val incomingMsgId = parsed.msgId ?: "${parsed.command}-${parsed.id ?: parsed.tx ?: parsed.timestamp}"
+        val alreadyProcessed = _processedProtocolMsgIds.contains(incomingMsgId)
+
+        // Prevent infinite ACK loops: ACK/response commands never generate another ACK
+        if (AmbiorixSmsProtocol.isAckOrResponseCommand(parsed.command)) {
+            if (alreadyProcessed) return true
+            _processedProtocolMsgIds.add(incomingMsgId)
+            saveProcessedProtocolMsgIds()
+            handleAckOrResponseCommand(parsed)
+            return true
+        }
+
+        // For non-ACK commands: if duplicate SMS delivery, re-send technical ACK without duplicating state changes
+        if (alreadyProcessed) {
+            sendAckForCommand(parsed, senderPhone)
+            return true
+        }
+
+        _processedProtocolMsgIds.add(incomingMsgId)
+        saveProcessedProtocolMsgIds()
+
+        when (parsed.command) {
+            AmbiorixSmsProtocol.CMD_RESERVE -> {
+                val resId = parsed.id ?: return false
+                val amount = parsed.amount ?: return false
+                if (amount <= 0L) return false
+                val originStore = parsed.src ?: getPeerStoreId()
+                val orderId = parsed.orderId ?: "ORD-$resId"
+                val ts = parsed.timestamp ?: System.currentTimeMillis()
+
+                val existing = _reservations.value.find { it.id == resId }
+                // Terminal state protection (Test 19 & 43): old RESERVE cannot reactivate CANCELLED / REPLACED_BY_CASH / COMPLETED
+                if (existing != null) {
+                    if (existing.state == ReservationState.CANCELLED ||
+                        existing.state == ReservationState.REPLACED_BY_CASH ||
+                        existing.state == ReservationState.COMPLETED ||
+                        parsed.seq < existing.seq
+                    ) {
+                        sendAckForCommand(parsed, senderPhone)
+                        return true
+                    }
+                } else {
+                    val remoteRes = PaymentReservation(
+                        id = resId,
+                        orderId = orderId,
+                        deviceId = "peer-${originStore.lowercase()}",
+                        storeId = originStore,
+                        amount = amount,
+                        createdAt = ts,
+                        state = ReservationState.ACTIVE,
+                        syncState = SyncState.ACKNOWLEDGED,
+                        protocolVersion = parsed.version,
+                        seq = parsed.seq
+                    )
+                    _reservations.value = listOf(remoteRes) + _reservations.value
+                    saveReservations()
+                }
+                sendAckForCommand(parsed, senderPhone)
+            }
+
+            AmbiorixSmsProtocol.CMD_CANCEL -> {
+                val resId = parsed.id ?: return false
+                val originStore = parsed.src ?: getPeerStoreId()
+                val amount = parsed.amount ?: 0L
+                val reason = parsed.reason ?: "PEER_CANCEL"
+                val ts = parsed.timestamp ?: System.currentTimeMillis()
+
+                val existing = _reservations.value.find { it.id == resId }
+                if (existing != null) {
+                    if (existing.state != ReservationState.COMPLETED) {
+                        val updated = existing.copy(
+                            state = if (reason == "REPLACED_BY_CASH") ReservationState.REPLACED_BY_CASH else ReservationState.CANCELLED,
+                            cancellationReason = reason,
+                            seq = maxOf(existing.seq + 1, parsed.seq),
+                            syncState = SyncState.ACKNOWLEDGED
+                        )
+                        updateReservationInList(updated)
+                    }
+                } else {
+                    // Out-of-order arrival: CANCEL arrived before RESERVE! Record tombstoned CANCELLED reservation (Test 19 & 37)
+                    val tombstone = PaymentReservation(
+                        id = resId,
+                        orderId = "ORD-$resId",
+                        deviceId = "peer-${originStore.lowercase()}",
+                        storeId = originStore,
+                        amount = amount,
+                        createdAt = ts,
+                        state = if (reason == "REPLACED_BY_CASH") ReservationState.REPLACED_BY_CASH else ReservationState.CANCELLED,
+                        cancellationReason = reason,
+                        seq = maxOf(2, parsed.seq),
+                        syncState = SyncState.ACKNOWLEDGED
+                    )
+                    _reservations.value = listOf(tombstone) + _reservations.value
+                    saveReservations()
+                }
+                sendAckForCommand(parsed, senderPhone)
+            }
+
+            AmbiorixSmsProtocol.CMD_PAYMENT_CANDIDATE -> {
+                val resId = parsed.id ?: return false
+                val existing = _reservations.value.find { it.id == resId }
+                if (existing != null && existing.state == ReservationState.ACTIVE) {
+                    updateReservationInList(
+                        existing.copy(
+                            state = ReservationState.PAYMENT_CANDIDATE,
+                            matchedNotificationId = parsed.tx
+                        )
+                    )
+                }
+                sendAckForCommand(parsed, senderPhone)
+            }
+
+            AmbiorixSmsProtocol.CMD_COMPLETE -> {
+                val resId = parsed.id ?: return false
+                val existing = _reservations.value.find { it.id == resId }
+                if (existing != null) {
+                    updateReservationInList(
+                        existing.copy(
+                            state = ReservationState.COMPLETED,
+                            saleId = parsed.saleId ?: existing.saleId,
+                            matchedNotificationId = parsed.tx ?: existing.matchedNotificationId,
+                            seq = maxOf(existing.seq + 1, parsed.seq),
+                            syncState = SyncState.ACKNOWLEDGED
+                        )
+                    )
+                    if (!parsed.tx.isNullOrBlank()) {
+                        _bankNotifications.value.find { it.id == parsed.tx }?.let { n ->
+                            updateBankNotificationInList(
+                                n.copy(
+                                    state = NotificationState.ASSIGNED,
+                                    assignedStore = existing.storeId,
+                                    linkedReservationId = existing.id,
+                                    syncState = SyncState.ACKNOWLEDGED
+                                )
+                            )
+                        }
+                    }
+                }
+                sendAckForCommand(parsed, senderPhone)
+            }
+
+            AmbiorixSmsProtocol.CMD_ASSIGN -> {
+                val txId = parsed.tx ?: return false
+                val targetStore = parsed.dst ?: getLocalStoreId()
+                val amount = parsed.amount ?: 0L
+
+                val localNotif = _bankNotifications.value.find {
+                    it.id == txId || (it.amount == amount && it.state == NotificationState.UNASSIGNED)
+                }
+
+                if (localNotif == null) {
+                    // Section 14.2 & Test 32: Destination must NOT invent a bank notification or sale if event not found
+                    _pendingRemoteAssignments.value = listOf(parsed) + _pendingRemoteAssignments.value
+                    val statusReq = AmbiorixSmsProtocol.buildStatus(
+                        id = txId,
+                        src = getLocalStoreId(),
+                        dst = parsed.src ?: getPeerStoreId()
+                    )
+                    coordinationTransport.sendCommand(statusReq, senderPhone)
+                } else {
+                    // Check for incompatible assignment conflict (Section 14.3 & Test 35)
+                    if (localNotif.assignedStore != null && !localNotif.assignedStore.equals(targetStore, ignoreCase = true)) {
+                        val conflictNotif = localNotif.copy(
+                            state = NotificationState.REQUIRES_REVIEW,
+                            reviewReason = "Conflicto de asignación manual entre ${localNotif.assignedStore} y $targetStore"
+                        )
+                        updateBankNotificationInList(conflictNotif)
+                        updatePaymentTransactionForNotification(conflictNotif, status = "REQUIRES_REVIEW")
+                    } else {
+                        val assignedNotif = localNotif.copy(
+                            state = NotificationState.ASSIGNED,
+                            assignedStore = targetStore,
+                            assignedAt = System.currentTimeMillis(),
+                            syncState = SyncState.ACKNOWLEDGED
+                        )
+                        updateBankNotificationInList(assignedNotif)
+                        val newTxStatus = if (targetStore.equals(getLocalStoreId(), ignoreCase = true)) "CONFIRMED" else "ASSIGNED_OTHER"
+                        updatePaymentTransactionForNotification(assignedNotif, status = newTxStatus)
+                    }
+                    sendAckForCommand(parsed, senderPhone)
+                }
+            }
+
+            AmbiorixSmsProtocol.CMD_STATUS -> {
+                val entityId = parsed.id ?: parsed.tx ?: return false
+                val res = _reservations.value.find { it.id == entityId }
+                val notif = _bankNotifications.value.find { it.id == entityId }
+                val stateStr = res?.state?.name ?: notif?.state?.name ?: "UNKNOWN"
+                val resp = AmbiorixSmsProtocol.buildStatusResponse(
+                    id = entityId,
+                    state = stateStr,
+                    src = getLocalStoreId(),
+                    dst = parsed.src ?: getPeerStoreId()
+                )
+                coordinationTransport.sendCommand(resp, senderPhone)
+            }
+
+            AmbiorixSmsProtocol.CMD_RECONCILE -> {
+                val entityId = parsed.id ?: return false
+                val remoteState = parsed.state ?: return false
+                val res = _reservations.value.find { it.id == entityId }
+                if (res != null) {
+                    // Reconcile without allowing reactivation of cancelled/completed states
+                    if (remoteState == ReservationState.CANCELLED.name && res.state == ReservationState.ACTIVE) {
+                        updateReservationInList(res.copy(state = ReservationState.CANCELLED, syncState = SyncState.ACKNOWLEDGED))
+                    } else if (remoteState == ReservationState.COMPLETED.name && res.state != ReservationState.COMPLETED) {
+                        updateReservationInList(res.copy(state = ReservationState.COMPLETED, syncState = SyncState.ACKNOWLEDGED))
+                    } else if (res.syncState != SyncState.ACKNOWLEDGED) {
+                        updateReservationInList(res.copy(syncState = SyncState.ACKNOWLEDGED))
+                    }
+                }
+                sendAckForCommand(parsed, senderPhone)
+            }
+        }
+        return true
+    }
+
+    private fun handleAckOrResponseCommand(parsed: AmbiorixSmsProtocol.ParsedCommand) {
+        val ackedMsgId = parsed.ackMsgId
+        val entityId = parsed.id ?: parsed.tx
+
+        if (ackedMsgId != null) {
+            _outboxMessages.value = _outboxMessages.value.map { msg ->
+                if (msg.id == ackedMsgId || msg.relatedEntityId == entityId) {
+                    msg.copy(acknowledged = true)
+                } else msg
+            }
+            saveOutboxMessages()
+        }
+
+        when (parsed.command) {
+            AmbiorixSmsProtocol.CMD_RESERVE_ACK,
+            AmbiorixSmsProtocol.CMD_CANCEL_ACK,
+            AmbiorixSmsProtocol.CMD_COMPLETE_ACK -> {
+                if (entityId != null) {
+                    _reservations.value.find { it.id == entityId }?.let { res ->
+                        updateReservationInList(res.copy(syncState = SyncState.ACKNOWLEDGED))
+                    }
+                }
+            }
+            AmbiorixSmsProtocol.CMD_ASSIGN_ACK -> {
+                if (entityId != null) {
+                    _bankNotifications.value.find { it.id == entityId }?.let { notif ->
+                        updateBankNotificationInList(notif.copy(syncState = SyncState.ACKNOWLEDGED))
+                    }
+                }
+            }
+            AmbiorixSmsProtocol.CMD_STATUS_RESPONSE -> {
+                if (entityId != null && parsed.state != null) {
+                    _reservations.value.find { it.id == entityId }?.let { res ->
+                        if (parsed.state == ReservationState.CANCELLED.name && res.state == ReservationState.ACTIVE) {
+                            updateReservationInList(res.copy(state = ReservationState.CANCELLED, syncState = SyncState.ACKNOWLEDGED))
+                        } else {
+                            updateReservationInList(res.copy(syncState = SyncState.ACKNOWLEDGED))
+                        }
+                    }
+                }
+            }
+            AmbiorixSmsProtocol.CMD_ACK -> {
+                if (entityId != null) {
+                    _reservations.value.find { it.id == entityId }?.let { res ->
+                        updateReservationInList(res.copy(syncState = SyncState.ACKNOWLEDGED))
+                    }
+                    _bankNotifications.value.find { it.id == entityId }?.let { notif ->
+                        updateBankNotificationInList(notif.copy(syncState = SyncState.ACKNOWLEDGED))
+                    }
+                }
+            }
+        }
+    }
+
+    private fun sendAckForCommand(parsed: AmbiorixSmsProtocol.ParsedCommand, targetPhone: String) {
+        val ackMsgId = parsed.msgId ?: parsed.id ?: parsed.tx ?: "msg"
+        val src = getLocalStoreId()
+        val dst = parsed.src ?: getPeerStoreId()
+        val payload = when (parsed.command) {
+            AmbiorixSmsProtocol.CMD_RESERVE -> AmbiorixSmsProtocol.buildReserveAck(parsed.id ?: "", ackMsgId, src, dst)
+            AmbiorixSmsProtocol.CMD_CANCEL -> AmbiorixSmsProtocol.buildCancelAck(parsed.id ?: "", ackMsgId, src, dst)
+            AmbiorixSmsProtocol.CMD_COMPLETE -> AmbiorixSmsProtocol.buildCompleteAck(parsed.id ?: "", ackMsgId, src, dst)
+            AmbiorixSmsProtocol.CMD_ASSIGN -> AmbiorixSmsProtocol.buildAssignAck(parsed.tx ?: "", ackMsgId, src, dst)
+            else -> AmbiorixSmsProtocol.buildAck(ackMsgId, src, dst)
+        }
+        coordinationTransport.sendCommand(payload, targetPhone)
+    }
+
+    private fun enqueueAndDispatchOutbox(
+        msgId: String,
+        command: String,
+        payload: String,
+        relatedEntityId: String
+    ): Boolean {
+        val phone = getPeerPhone()
+        val now = System.currentTimeMillis()
+        val initialOutboxItem = PendingOutboxMessage(
+            id = msgId,
+            command = command,
+            payload = payload,
+            targetPhone = phone,
+            relatedEntityId = relatedEntityId,
+            createdAt = now,
+            retryCount = 0,
+            lastAttemptAt = now,
+            acknowledged = false
+        )
+        _outboxMessages.value = listOf(initialOutboxItem) + _outboxMessages.value.filter { it.id != msgId }
+        saveOutboxMessages()
+
+        val sent = coordinationTransport.sendCommand(payload, phone)
+        if (!sent) {
+            _outboxMessages.value = _outboxMessages.value.map {
+                if (it.id == msgId) it.copy(retryCount = 1) else it
+            }
+            saveOutboxMessages()
+        }
+        return sent
+    }
+
+    /**
+     * Processes an incoming Nequi bank SMS or notification (Sections 6, 7, 12, 13).
+     * Never treats internal Ambiorix coordination commands as bank payment evidence.
+     */
+    @Synchronized
+    fun processNequiBankSms(
+        rawBody: String,
+        originatingAddress: String? = com.ambiorix.pay.sms.NequiSmsParser.KNOWN_NEQUI_SENDER,
+        timestamp: Long = System.currentTimeMillis(),
+        explicitBankRef: String? = null,
+        explicitEventId: String? = null
+    ): NequiBankNotification? {
+        val trimmed = rawBody.trim()
+        if (trimmed.isEmpty()) return null
+
+        // 1. Internal coordination SMS is NEVER a bank payment (Section 6 & Test 14)
+        if (AmbiorixSmsProtocol.isProtocolMessage(trimmed)) {
+            processIncomingCoordinationSms(trimmed, originatingAddress ?: getPeerPhone())
+            return null
+        }
+
+        // Extract bank reference if explicitly present in SMS text (never invent if absent! Test 15)
+        val extractedRef = explicitBankRef ?: extractBankRefFromText(trimmed)
+
+        val parseResult = com.ambiorix.pay.sms.NequiSmsParser.parse(originatingAddress, trimmed)
+        if (parseResult is com.ambiorix.pay.sms.SmsPaymentParseResult.Ignored) {
+            // Check if it is a bank notification from Nequi without extractable amount (Section 7 & Test 10)
+            val lower = trimmed.lowercase()
+            val looksLikeNequiNotice = (originatingAddress == com.ambiorix.pay.sms.NequiSmsParser.KNOWN_NEQUI_SENDER || lower.contains("nequi")) &&
+                (lower.contains("recibi") || lower.contains("pago") || lower.contains("transferencia") || lower.contains("enviaron") || lower.contains("movimiento") || lower.contains("abono")) &&
+                !lower.contains("clave") && !lower.contains("codigo") && !lower.contains("código")
+
+
+            if (!looksLikeNequiNotice) return null
+
+            val unparsedId = explicitEventId ?: computeStableBankEventId(0L, null, extractedRef, trimmed, timestamp)
+            val existingUnparsed = _bankNotifications.value.find { it.id == unparsedId }
+            if (existingUnparsed != null) {
+                return existingUnparsed.copy(state = NotificationState.DUPLICATE_EVENT)
+            }
+
+            val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(timestamp))
+            val timeStr = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(timestamp))
+            val pendingNotif = NequiBankNotification(
+                id = unparsedId,
+                amount = 0L,
+                senderName = null,
+                bankRef = extractedRef,
+                channel = null,
+                timestamp = timestamp,
+                dateStr = dateStr,
+                timeStr = timeStr,
+                rawBody = trimmed,
+                state = NotificationState.REQUIRES_REVIEW,
+                reviewReason = "No se pudo extraer un valor monetario válido del SMS"
+            )
+            _bankNotifications.value = listOf(pendingNotif) + _bankNotifications.value
+            saveBankNotifications()
+            return pendingNotif
+        }
+
+        val parsedPayment = (parseResult as com.ambiorix.pay.sms.SmsPaymentParseResult.Success).payment
+        val amount = parsedPayment.amount
+        val senderName = parsedPayment.senderName
+        val channel = parsedPayment.channel
+
+        val eventId = explicitEventId ?: computeStableBankEventId(amount, senderName, extractedRef, trimmed, timestamp)
+
+        // 2. Duplicate notification check (Test 12: same notification never produces two sales)
+        val existingNotif = _bankNotifications.value.find { it.id == eventId }
+        if (existingNotif != null) {
+            return existingNotif.copy(state = NotificationState.DUPLICATE_EVENT)
+        }
+
+        val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(timestamp))
+        val timeStr = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(timestamp))
+
+        // 3. Evaluate active reservations matching exact amount
+        val activeStates = setOf(
+            ReservationState.CREATED,
+            ReservationState.PENDING_SEND,
+            ReservationState.SENT,
+            ReservationState.ACKNOWLEDGED,
+            ReservationState.ACTIVE,
+            ReservationState.PAYMENT_CANDIDATE
+        )
+        val matchingActive = _reservations.value.filter {
+            it.amount == amount && activeStates.contains(it.state)
+        }
+
+        // Case A: Multiple active reservations with the same amount -> AMBIGUOUS (Section 5 & Test 7)
+        if (matchingActive.size > 1) {
+            matchingActive.forEach { r ->
+                updateReservationInList(r.copy(state = ReservationState.REQUIRES_REVIEW))
+            }
+            val ambiguousNotif = NequiBankNotification(
+                id = eventId,
+                amount = amount,
+                senderName = senderName,
+                bankRef = extractedRef,
+                channel = channel,
+                timestamp = timestamp,
+                dateStr = dateStr,
+                timeStr = timeStr,
+                rawBody = trimmed,
+                state = NotificationState.REQUIRES_REVIEW,
+                reviewReason = "Ambigüedad: existen ${matchingActive.size} reservas activas por $$amount"
+            )
+            _bankNotifications.value = listOf(ambiguousNotif) + _bankNotifications.value
+            saveBankNotifications()
+
+            recordPaymentTransaction(
+                method = "NEQUI",
+                amount = amount,
+                payerNameOrPhone = senderName,
+                bankTransactionRef = extractedRef,
+                smsEventId = eventId,
+                originInstallation = "Revisión Manual (Reserva Ambigua)",
+                nequiChannel = channel,
+                dateStr = dateStr,
+                time = timeStr,
+                status = "UNASSIGNED"
+            )
+            return ambiguousNotif
+        }
+
+        // Case B: Single active reservation matches exact amount (Test 8)
+        if (matchingActive.size == 1) {
+            val candidate = matchingActive.first()
+
+            if (candidate.storeId.equals(getLocalStoreId(), ignoreCase = true)) {
+                // Belongs to THIS store -> confirm sale atomically & idempotently once
+                val deterministicSaleId = "sale-${candidate.id}"
+                val items = recoverReservationCart(candidate.id)
+                val saleRecord = if (items.isNotEmpty()) {
+                    completeSale(
+                        items = items,
+                        subtotal = candidate.subtotal,
+                        discount = candidate.discount,
+                        total = candidate.amount,
+                        paymentMethod = "NEQUI",
+                        cashierName = candidate.cashierName,
+                        senderName = senderName,
+                        channel = channel,
+                        saleId = deterministicSaleId
+                    ).getOrNull()
+                } else {
+                    // Reservation created directly without cart items: register sale & payment idempotently
+                    if (!_processedSaleIds.contains(deterministicSaleId)) {
+                        val saleNo = "V-${(_sales.value.size + 101).toString().padStart(5, '0')}"
+                        val directSale = SaleRecord(
+                            id = deterministicSaleId,
+                            saleNumber = saleNo,
+                            items = emptyList(),
+                            subtotal = candidate.subtotal,
+                            discount = candidate.discount,
+                            total = candidate.amount,
+                            paymentMethod = "NEQUI",
+                            cashAmount = 0L,
+                            nequiAmount = candidate.amount,
+                            nequiSenderName = senderName,
+                            nequiChannel = channel,
+                            timestamp = timeStr,
+                            dateStr = dateStr,
+                            cashierName = candidate.cashierName,
+                            status = "COMPLETED",
+                            isInventoryDeducted = true
+                        )
+                        _sales.value = listOf(directSale) + _sales.value
+                        _processedSaleIds.add(deterministicSaleId)
+                        saveSales()
+                        recordPaymentTransaction(
+                            method = "NEQUI",
+                            amount = amount,
+                            saleId = deterministicSaleId,
+                            saleNumber = saleNo,
+                            cashierName = candidate.cashierName,
+                            payerNameOrPhone = senderName,
+                            bankTransactionRef = extractedRef,
+                            smsEventId = eventId,
+                            originInstallation = getLocalStoreId(),
+                            nequiChannel = channel,
+                            dateStr = dateStr,
+                            time = timeStr,
+                            status = "CONFIRMED"
+                        )
+                        directSale
+                    } else {
+                        _sales.value.find { it.id == deterministicSaleId }
+                    }
+                }
+
+                // Update payment transaction with actual bankRef & eventId if created by completeSale
+                if (saleRecord != null) {
+                    _paymentTransactions.value = _paymentTransactions.value.map { tx ->
+                        if (tx.saleId == saleRecord.id && tx.method == "NEQUI") {
+                            tx.copy(
+                                bankTransactionRef = extractedRef,
+                                smsEventId = eventId,
+                                payerNameOrPhone = senderName,
+                                originInstallation = getLocalStoreId()
+                            )
+                        } else tx
+                    }
+                    savePaymentTransactions()
+                }
+
+                val completedRes = candidate.copy(
+                    state = ReservationState.COMPLETED,
+                    matchedNotificationId = eventId,
+                    saleId = saleRecord?.id ?: deterministicSaleId,
+                    isPendingHold = false,
+                    seq = candidate.seq + 1
+                )
+                updateReservationInList(completedRes)
+
+                val linkedNotif = NequiBankNotification(
+                    id = eventId,
+                    amount = amount,
+                    senderName = senderName,
+                    bankRef = extractedRef,
+                    channel = channel,
+                    timestamp = timestamp,
+                    dateStr = dateStr,
+                    timeStr = timeStr,
+                    rawBody = trimmed,
+                    state = NotificationState.LINKED_TO_SALE,
+                    assignedStore = getLocalStoreId(),
+                    linkedReservationId = candidate.id,
+                    linkedSaleId = saleRecord?.id ?: deterministicSaleId,
+                    syncState = SyncState.SENT
+                )
+                _bankNotifications.value = listOf(linkedNotif) + _bankNotifications.value
+                saveBankNotifications()
+
+                // Notify peer store that reservation is COMPLETE
+                val cmpMsgId = "M-CMP-${candidate.id}"
+                val cmpPayload = AmbiorixSmsProtocol.buildComplete(
+                    id = candidate.id,
+                    saleId = saleRecord?.id ?: deterministicSaleId,
+                    src = getLocalStoreId(),
+                    amount = amount,
+                    timestamp = timestamp,
+                    msgId = cmpMsgId,
+                    seq = completedRes.seq,
+                    tx = eventId
+                )
+                enqueueAndDispatchOutbox(cmpMsgId, AmbiorixSmsProtocol.CMD_COMPLETE, cmpPayload, candidate.id)
+                _protocolState.value = ProtocolState.PAYMENT_MATCHED
+                return linkedNotif
+            } else {
+                // Reservation belongs to PEER store (e.g. Pizzería): do NOT claim or record local sale!
+                val peerCandidateNotif = NequiBankNotification(
+                    id = eventId,
+                    amount = amount,
+                    senderName = senderName,
+                    bankRef = extractedRef,
+                    channel = channel,
+                    timestamp = timestamp,
+                    dateStr = dateStr,
+                    timeStr = timeStr,
+                    rawBody = trimmed,
+                    state = NotificationState.MATCH_CANDIDATE,
+                    assignedStore = candidate.storeId,
+                    linkedReservationId = candidate.id
+                )
+                _bankNotifications.value = listOf(peerCandidateNotif) + _bankNotifications.value
+                saveBankNotifications()
+
+                val candPayload = AmbiorixSmsProtocol.buildPaymentCandidate(
+                    id = candidate.id,
+                    tx = eventId,
+                    src = getLocalStoreId(),
+                    amount = amount,
+                    timestamp = timestamp
+                )
+                coordinationTransport.sendCommand(candPayload, getPeerPhone())
+                return peerCandidateNotif
+            }
+        }
+
+        // Case B2: Peer store already sent COMPLETE with this exact notification eventId before bank SMS arrived locally
+        val peerCompletedMatch = _reservations.value.find {
+            it.state == ReservationState.COMPLETED &&
+                !it.storeId.equals(getLocalStoreId(), ignoreCase = true) &&
+                it.matchedNotificationId == eventId
+        }
+        if (peerCompletedMatch != null) {
+            val peerCompletedNotif = NequiBankNotification(
+                id = eventId,
+                amount = amount,
+                senderName = senderName,
+                bankRef = extractedRef,
+                channel = channel,
+                timestamp = timestamp,
+                dateStr = dateStr,
+                timeStr = timeStr,
+                rawBody = trimmed,
+                state = NotificationState.ASSIGNED,
+                assignedStore = peerCompletedMatch.storeId,
+                linkedReservationId = peerCompletedMatch.id,
+                syncState = SyncState.ACKNOWLEDGED
+            )
+            _bankNotifications.value = listOf(peerCompletedNotif) + _bankNotifications.value
+            saveBankNotifications()
+            return peerCompletedNotif
+        }
+
+        // Case C: Check recently CANCELLED or REPLACED_BY_CASH reservations of the same amount (Section 12 & Tests 20, 25, 44)
+        val cancelledMatch = _reservations.value.find {
+            it.amount == amount &&
+                (it.state == ReservationState.CANCELLED || it.state == ReservationState.REPLACED_BY_CASH)
+        }
+        if (cancelledMatch != null) {
+            // Do NOT reactivate reservation, do NOT create a second sale, do NOT deduct stock again!
+            val lateNotif = NequiBankNotification(
+                id = eventId,
+                amount = amount,
+                senderName = senderName,
+                bankRef = extractedRef,
+                channel = channel,
+                timestamp = timestamp,
+                dateStr = dateStr,
+                timeStr = timeStr,
+                rawBody = trimmed,
+                state = NotificationState.RECONCILIATION_PENDING,
+                linkedReservationId = cancelledMatch.id,
+                reviewReason = "Pago tardío recibido tras reserva ${cancelledMatch.state.name}"
+            )
+            _bankNotifications.value = listOf(lateNotif) + _bankNotifications.value
+            saveBankNotifications()
+
+            recordPaymentTransaction(
+                method = "NEQUI",
+                amount = amount,
+                payerNameOrPhone = senderName,
+                bankTransactionRef = extractedRef,
+                smsEventId = eventId,
+                originInstallation = "Pago Tardío (Pendiente Conciliación)",
+                nequiChannel = channel,
+                dateStr = dateStr,
+                time = timeStr,
+                status = "RECONCILIATION_PENDING",
+                notes = "Reserva previa ${cancelledMatch.id} (${cancelledMatch.state.name})"
+            )
+            return lateNotif
+        }
+
+        // Case D: No reservation matches -> UNASSIGNED (Section 13 & Tests 11, 28)
+        val unassignedNotif = NequiBankNotification(
+            id = eventId,
+            amount = amount,
+            senderName = senderName,
+            bankRef = extractedRef,
+            channel = channel,
+            timestamp = timestamp,
+            dateStr = dateStr,
+            timeStr = timeStr,
+            rawBody = trimmed,
+            state = NotificationState.UNASSIGNED,
+            reviewReason = "Recibido sin reserva activa"
+        )
+        _bankNotifications.value = listOf(unassignedNotif) + _bankNotifications.value
+        saveBankNotifications()
+
+        recordPaymentTransaction(
+            method = "NEQUI",
+            amount = amount,
+            payerNameOrPhone = senderName,
+            bankTransactionRef = extractedRef,
+            smsEventId = eventId,
+            originInstallation = "Pendiente de Asignación",
+            nequiChannel = channel,
+            dateStr = dateStr,
+            time = timeStr,
+            status = "UNASSIGNED"
+        )
+        return unassignedNotif
+    }
+
+    /**
+     * Manual assignment to "Este local" from History (Section 14.1 & Tests 29, 35).
+     */
+    @Synchronized
+    fun assignNotificationToLocalStore(
+        notificationOrTxId: String,
+        cashierName: String = _activeCashier.value.name
+    ): Result<NequiBankNotification> {
+        val notif = findNotificationByIdOrTxId(notificationOrTxId)
+            ?: return Result.failure(NoSuchElementException("Notificación bancaria no encontrada"))
+
+        val localStore = getLocalStoreId()
+        // Idempotent if already assigned to this local store
+        if (notif.assignedStore != null && notif.assignedStore.equals(localStore, ignoreCase = true) && notif.state == NotificationState.ASSIGNED) {
+            return Result.success(notif)
+        }
+
+        // Conflict check if already assigned to peer store
+        if (notif.assignedStore != null && !notif.assignedStore.equals(localStore, ignoreCase = true)) {
+            val conflict = notif.copy(
+                state = NotificationState.REQUIRES_REVIEW,
+                reviewReason = "Conflicto: ya asignada a ${notif.assignedStore}"
+            )
+            updateBankNotificationInList(conflict)
+            updatePaymentTransactionForNotification(conflict, status = "REQUIRES_REVIEW")
+            return Result.failure(IllegalStateException("Conflicto de asignación: la transacción ya tenía asignación a ${notif.assignedStore}"))
+        }
+
+        val now = System.currentTimeMillis()
+        val msgId = "M-ASG-${notif.id}-$localStore"
+        val payload = AmbiorixSmsProtocol.buildAssign(
+            tx = notif.id,
+            src = localStore,
+            dst = localStore,
+            amount = notif.amount,
+            bankts = notif.timestamp,
+            payer = notif.senderName,
+            bankRef = notif.bankRef,
+            msgId = msgId
+        )
+        val preAssignedLocal = notif.copy(
+            state = NotificationState.ASSIGNED,
+            assignedStore = localStore,
+            assignedByCashier = cashierName,
+            assignedAt = now,
+            syncState = SyncState.PENDING_SEND
+        )
+        updateBankNotificationInList(preAssignedLocal)
+
+        val sent = enqueueAndDispatchOutbox(msgId, AmbiorixSmsProtocol.CMD_ASSIGN, payload, notif.id)
+        val currentNotif = _bankNotifications.value.find { it.id == notif.id } ?: preAssignedLocal
+        val updated = currentNotif.copy(
+            syncState = when {
+                currentNotif.syncState == SyncState.ACKNOWLEDGED -> SyncState.ACKNOWLEDGED
+                sent -> SyncState.SENT
+                else -> SyncState.RETRY_PENDING
+            }
+        )
+        updateBankNotificationInList(updated)
+        updatePaymentTransactionForNotification(
+            updated,
+            status = if (updated.state == NotificationState.REQUIRES_REVIEW) "REQUIRES_REVIEW" else "CONFIRMED",
+            originInstallation = "Asignado a $localStore por $cashierName"
+        )
+        return Result.success(updated)
+    }
+
+    /**
+     * Manual assignment to "El otro local" from History (Section 14.2 & Tests 30-35).
+     */
+    @Synchronized
+    fun assignNotificationToPeerStore(
+        notificationOrTxId: String,
+        cashierName: String = _activeCashier.value.name
+    ): Result<NequiBankNotification> {
+        val notif = findNotificationByIdOrTxId(notificationOrTxId)
+            ?: return Result.failure(NoSuchElementException("Notificación bancaria no encontrada"))
+
+        val localStore = getLocalStoreId()
+        val peerStore = getPeerStoreId()
+
+        // Idempotent if already assigned to peer store
+        if (notif.assignedStore != null && notif.assignedStore.equals(peerStore, ignoreCase = true) && notif.state == NotificationState.ASSIGNED) {
+            return Result.success(notif)
+        }
+
+        // Conflict if already assigned to local store
+        if (notif.assignedStore != null && notif.assignedStore.equals(localStore, ignoreCase = true)) {
+            val conflict = notif.copy(
+                state = NotificationState.REQUIRES_REVIEW,
+                reviewReason = "Conflicto: ya asignada localmente a $localStore"
+            )
+            updateBankNotificationInList(conflict)
+            updatePaymentTransactionForNotification(conflict, status = "REQUIRES_REVIEW")
+            return Result.failure(IllegalStateException("Conflicto de asignación: ya asignada a $localStore"))
+        }
+
+        val now = System.currentTimeMillis()
+        val msgId = "M-ASG-${notif.id}-$peerStore"
+        val payload = AmbiorixSmsProtocol.buildAssign(
+            tx = notif.id,
+            src = localStore,
+            dst = peerStore,
+            amount = notif.amount,
+            bankts = notif.timestamp,
+            payer = notif.senderName,
+            bankRef = notif.bankRef,
+            msgId = msgId
+        )
+        val preAssignedPeer = notif.copy(
+            state = NotificationState.ASSIGNED,
+            assignedStore = peerStore,
+            assignedByCashier = cashierName,
+            assignedAt = now,
+            syncState = SyncState.PENDING_SEND
+        )
+        updateBankNotificationInList(preAssignedPeer)
+
+        val sent = enqueueAndDispatchOutbox(msgId, AmbiorixSmsProtocol.CMD_ASSIGN, payload, notif.id)
+        val currentNotif = _bankNotifications.value.find { it.id == notif.id } ?: preAssignedPeer
+        val updated = currentNotif.copy(
+            syncState = when {
+                currentNotif.syncState == SyncState.ACKNOWLEDGED -> SyncState.ACKNOWLEDGED
+                sent -> SyncState.SENT
+                else -> SyncState.RETRY_PENDING
+            }
+        )
+        updateBankNotificationInList(updated)
+        updatePaymentTransactionForNotification(
+            updated,
+            status = if (updated.state == NotificationState.REQUIRES_REVIEW) "REQUIRES_REVIEW" else "ASSIGNED_OTHER",
+            originInstallation = "Asignado a $peerStore por $cashierName"
+        )
+        return Result.success(updated)
+    }
+
+    /**
+     * Reconciles a late bank notification without duplicating any existing sale or inventory deduction (Section 12 & Test 44).
+     */
+    @Synchronized
+    fun reconcileLateNotification(
+        notificationId: String,
+        resolutionNote: String,
+        cashierName: String = _activeCashier.value.name
+    ): Result<NequiBankNotification> {
+        val notif = findNotificationByIdOrTxId(notificationId)
+            ?: return Result.failure(NoSuchElementException("Notificación no encontrada"))
+
+        val updated = notif.copy(
+            state = NotificationState.ASSIGNED,
+            assignedStore = getLocalStoreId(),
+            assignedByCashier = cashierName,
+            assignedAt = System.currentTimeMillis(),
+            reviewReason = "Conciliado manualmente: $resolutionNote"
+        )
+        updateBankNotificationInList(updated)
+        updatePaymentTransactionForNotification(
+            updated,
+            status = "RECONCILED_LATE",
+            originInstallation = "Conciliado ($resolutionNote)"
+        )
+        return Result.success(updated)
+    }
+
+    /**
+     * Sends a RECONCILE command for a reservation to synchronize state with the peer device (Section 15 & Test 42).
+     */
+    fun sendReconcileCommand(reservationId: String): Boolean {
+        val res = _reservations.value.find { it.id == reservationId } ?: return false
+        val payload = AmbiorixSmsProtocol.buildReconcile(
+            id = res.id,
+            state = res.state.name,
+            src = getLocalStoreId(),
+            dst = getPeerStoreId(),
+            amount = res.amount
+        )
+        return coordinationTransport.sendCommand(payload, getPeerPhone())
+    }
+
+    private fun findNotificationByIdOrTxId(idOrTxId: String): NequiBankNotification? {
+        val direct = _bankNotifications.value.find { it.id == idOrTxId }
+        if (direct != null) return direct
+        val tx = _paymentTransactions.value.find { it.id == idOrTxId || it.smsEventId == idOrTxId }
+        if (tx?.smsEventId != null) {
+            return _bankNotifications.value.find { it.id == tx.smsEventId }
+        }
+        return null
+    }
+
+    private fun updateReservationInList(updated: PaymentReservation) {
+        val list = _reservations.value.toMutableList()
+        val idx = list.indexOfFirst { it.id == updated.id }
+        if (idx >= 0) {
+            list[idx] = updated
+        } else {
+            list.add(0, updated)
+        }
+        _reservations.value = list
+        saveReservations()
+    }
+
+    private fun updateBankNotificationInList(updated: NequiBankNotification) {
+        val list = _bankNotifications.value.toMutableList()
+        val idx = list.indexOfFirst { it.id == updated.id }
+        if (idx >= 0) {
+            list[idx] = updated
+        } else {
+            list.add(0, updated)
+        }
+        _bankNotifications.value = list
+        saveBankNotifications()
+    }
+
+    private fun updatePaymentTransactionForNotification(
+        notif: NequiBankNotification,
+        status: String,
+        originInstallation: String? = null
+    ) {
+        _paymentTransactions.value = _paymentTransactions.value.map { tx ->
+            if (tx.smsEventId == notif.id || tx.id == notif.id) {
+                tx.copy(
+                    status = status,
+                    originInstallation = originInstallation ?: tx.originInstallation,
+                    cashierName = notif.assignedByCashier ?: tx.cashierName
+                )
+            } else tx
+        }
+        savePaymentTransactions()
+    }
+
+    private fun extractBankRefFromText(text: String): String? {
+        val refRegex = Regex("(?i)(?:ref(?:erencia)?|comprobante|movimiento)\\s*[:#]?\\s*([A-Z0-9]{5,20})")
+        val match = refRegex.find(text)
+        return match?.groups?.get(1)?.value?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun computeStableBankEventId(
+        amount: Long,
+        senderName: String?,
+        bankRef: String?,
+        rawBody: String,
+        timestamp: Long
+    ): String {
+        val raw = "$amount|${senderName.orEmpty()}|${bankRef.orEmpty()}|$timestamp|${rawBody.trim()}"
+        val hash = try {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            md.digest(raw.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }.take(12).uppercase()
+        } catch (e: Exception) {
+            Math.abs(raw.hashCode()).toString()
+        }
+        return "TX-$hash"
+    }
+
+    private fun encodeCartItemsList(items: List<CartItem>): String {
+        val sb = StringBuilder("[")
+        items.forEachIndexed { idx, itm ->
+            if (idx > 0) sb.append(",")
+            sb.append("{\"cartItemId\":\"${escape(itm.cartItemId)}\",\"productId\":\"${escape(itm.productId)}\",\"productName\":\"${escape(itm.productName)}\",\"basePrice\":${itm.basePrice},\"unitPrice\":${itm.unitPrice},\"quantity\":${itm.quantity},\"totalPrice\":${itm.totalPrice},\"estimatedCost\":${itm.estimatedCost}}")
+        }
+        sb.append("]")
+        return sb.toString()
+    }
+
+    private fun decodeCartItemsList(json: String): List<CartItem> {
+        val itemsList = mutableListOf<CartItem>()
+        if (!json.startsWith("[")) return itemsList
+        for (itmRaw in splitJsonArray(json)) {
+            val itmMap = parseSimpleJsonObject(itmRaw)
+            val pId = itmMap["productId"] ?: continue
+            val pName = itmMap["productName"] ?: "Producto"
+            val bp = itmMap["basePrice"]?.toLongOrNull() ?: 0L
+            val up = itmMap["unitPrice"]?.toLongOrNull() ?: bp
+            val qty = itmMap["quantity"]?.toIntOrNull() ?: 1
+            val tp = itmMap["totalPrice"]?.toLongOrNull() ?: (up * qty)
+            val cost = itmMap["estimatedCost"]?.toLongOrNull() ?: 0L
+            itemsList.add(
+                CartItem(
+                    cartItemId = itmMap["cartItemId"] ?: "item-$pId",
+                    productId = pId,
+                    productName = pName,
+                    basePrice = bp,
+                    unitPrice = up,
+                    quantity = qty,
+                    totalPrice = tp,
+                    estimatedCost = cost
+                )
+            )
+        }
+        return itemsList
+    }
+
+    private fun encodeReservations(list: List<PaymentReservation>): String {
+        val sb = StringBuilder("[")
+        list.forEachIndexed { i, r ->
+            if (i > 0) sb.append(",")
+            sb.append("{\"id\":\"${escape(r.id)}\",\"orderId\":\"${escape(r.orderId)}\",\"deviceId\":\"${escape(r.deviceId)}\",\"storeId\":\"${escape(r.storeId)}\",\"amount\":${r.amount},\"subtotal\":${r.subtotal},\"discount\":${r.discount},\"cashierName\":\"${escape(r.cashierName)}\",\"createdAt\":${r.createdAt},\"state\":\"${r.state.name}\",\"syncState\":\"${r.syncState.name}\",\"protocolVersion\":${r.protocolVersion},\"seq\":${r.seq},\"isPendingHold\":${r.isPendingHold},\"cancellationReason\":${r.cancellationReason?.let { "\"${escape(it)}\"" } ?: "null"},\"matchedNotificationId\":${r.matchedNotificationId?.let { "\"${escape(it)}\"" } ?: "null"},\"saleId\":${r.saleId?.let { "\"${escape(it)}\"" } ?: "null"},\"cartSnapshotJson\":${r.cartSnapshotJson ?: "[]"}}")
+        }
+        sb.append("]")
+        return sb.toString()
+    }
+
+    private fun decodeReservations(json: String): List<PaymentReservation> {
+        val list = mutableListOf<PaymentReservation>()
+        for (item in splitJsonArray(json)) {
+            val map = parseSimpleJsonObject(item)
+            val id = map["id"] ?: continue
+            val orderId = map["orderId"] ?: "ORD-$id"
+            val deviceId = map["deviceId"] ?: "dev-main"
+            val storeId = map["storeId"] ?: "HELADERIA"
+            val amount = map["amount"]?.toLongOrNull() ?: 0L
+            val subtotal = map["subtotal"]?.toLongOrNull() ?: amount
+            val discount = map["discount"]?.toLongOrNull() ?: 0L
+            val cashierName = map["cashierName"] ?: "Laura Gómez"
+            val createdAt = map["createdAt"]?.toLongOrNull() ?: System.currentTimeMillis()
+            val state = try { ReservationState.valueOf(map["state"] ?: "ACTIVE") } catch (_: Exception) { ReservationState.ACTIVE }
+            val syncState = try { SyncState.valueOf(map["syncState"] ?: "NOT_SENT") } catch (_: Exception) { SyncState.NOT_SENT }
+            val seq = map["seq"]?.toIntOrNull() ?: 1
+            val isPendingHold = map["isPendingHold"]?.toBoolean() ?: false
+            val cancellationReason = map["cancellationReason"]?.takeIf { it != "null" }
+            val matchedNotificationId = map["matchedNotificationId"]?.takeIf { it != "null" }
+            val saleId = map["saleId"]?.takeIf { it != "null" }
+            val cartJson = map["cartSnapshotJson"]?.takeIf { it != "null" }
+            list.add(
+                PaymentReservation(
+                    id = id,
+                    orderId = orderId,
+                    deviceId = deviceId,
+                    storeId = storeId,
+                    amount = amount,
+                    subtotal = subtotal,
+                    discount = discount,
+                    cashierName = cashierName,
+                    createdAt = createdAt,
+                    state = state,
+                    syncState = syncState,
+                    seq = seq,
+                    isPendingHold = isPendingHold,
+                    cancellationReason = cancellationReason,
+                    matchedNotificationId = matchedNotificationId,
+                    saleId = saleId,
+                    cartSnapshotJson = cartJson
+                )
+            )
+        }
+        return list
+    }
+
+    private fun encodeBankNotifications(list: List<NequiBankNotification>): String {
+        val sb = StringBuilder("[")
+        list.forEachIndexed { i, n ->
+            if (i > 0) sb.append(",")
+            sb.append("{\"id\":\"${escape(n.id)}\",\"amount\":${n.amount},\"senderName\":${n.senderName?.let { "\"${escape(it)}\"" } ?: "null"},\"bankRef\":${n.bankRef?.let { "\"${escape(it)}\"" } ?: "null"},\"channel\":${n.channel?.let { "\"${escape(it)}\"" } ?: "null"},\"timestamp\":${n.timestamp},\"dateStr\":\"${escape(n.dateStr)}\",\"timeStr\":\"${escape(n.timeStr)}\",\"rawBody\":\"${escape(n.rawBody)}\",\"state\":\"${n.state.name}\",\"assignedStore\":${n.assignedStore?.let { "\"${escape(it)}\"" } ?: "null"},\"assignedByCashier\":${n.assignedByCashier?.let { "\"${escape(it)}\"" } ?: "null"},\"assignedAt\":${n.assignedAt ?: "null"},\"linkedReservationId\":${n.linkedReservationId?.let { "\"${escape(it)}\"" } ?: "null"},\"linkedSaleId\":${n.linkedSaleId?.let { "\"${escape(it)}\"" } ?: "null"},\"syncState\":\"${n.syncState.name}\",\"reviewReason\":${n.reviewReason?.let { "\"${escape(it)}\"" } ?: "null"}}")
+        }
+        sb.append("]")
+        return sb.toString()
+    }
+
+    private fun decodeBankNotifications(json: String): List<NequiBankNotification> {
+        val list = mutableListOf<NequiBankNotification>()
+        for (item in splitJsonArray(json)) {
+            val map = parseSimpleJsonObject(item)
+            val id = map["id"] ?: continue
+            val amount = map["amount"]?.toLongOrNull() ?: 0L
+            val senderName = map["senderName"]?.takeIf { it != "null" }
+            val bankRef = map["bankRef"]?.takeIf { it != "null" }
+            val channel = map["channel"]?.takeIf { it != "null" }
+            val timestamp = map["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
+            val dateStr = map["dateStr"] ?: ""
+            val timeStr = map["timeStr"] ?: ""
+            val rawBody = map["rawBody"] ?: ""
+            val state = try { NotificationState.valueOf(map["state"] ?: "UNASSIGNED") } catch (_: Exception) { NotificationState.UNASSIGNED }
+            val assignedStore = map["assignedStore"]?.takeIf { it != "null" }
+            val assignedByCashier = map["assignedByCashier"]?.takeIf { it != "null" }
+            val assignedAt = map["assignedAt"]?.takeIf { it != "null" }?.toLongOrNull()
+            val linkedReservationId = map["linkedReservationId"]?.takeIf { it != "null" }
+            val linkedSaleId = map["linkedSaleId"]?.takeIf { it != "null" }
+            val syncState = try { SyncState.valueOf(map["syncState"] ?: "NOT_SENT") } catch (_: Exception) { SyncState.NOT_SENT }
+            val reviewReason = map["reviewReason"]?.takeIf { it != "null" }
+            list.add(
+                NequiBankNotification(
+                    id = id,
+                    amount = amount,
+                    senderName = senderName,
+                    bankRef = bankRef,
+                    channel = channel,
+                    timestamp = timestamp,
+                    dateStr = dateStr,
+                    timeStr = timeStr,
+                    rawBody = rawBody,
+                    state = state,
+                    assignedStore = assignedStore,
+                    assignedByCashier = assignedByCashier,
+                    assignedAt = assignedAt,
+                    linkedReservationId = linkedReservationId,
+                    linkedSaleId = linkedSaleId,
+                    syncState = syncState,
+                    reviewReason = reviewReason
+                )
+            )
+        }
+        return list
+    }
+
+    private fun encodeOutboxMessages(list: List<PendingOutboxMessage>): String {
+        val sb = StringBuilder("[")
+        list.forEachIndexed { i, m ->
+            if (i > 0) sb.append(",")
+            sb.append("{\"id\":\"${escape(m.id)}\",\"command\":\"${escape(m.command)}\",\"payload\":\"${escape(m.payload)}\",\"targetPhone\":\"${escape(m.targetPhone)}\",\"relatedEntityId\":\"${escape(m.relatedEntityId)}\",\"createdAt\":${m.createdAt},\"retryCount\":${m.retryCount},\"lastAttemptAt\":${m.lastAttemptAt},\"acknowledged\":${m.acknowledged}}")
+        }
+        sb.append("]")
+        return sb.toString()
+    }
+
+    private fun decodeOutboxMessages(json: String): List<PendingOutboxMessage> {
+        val list = mutableListOf<PendingOutboxMessage>()
+        for (item in splitJsonArray(json)) {
+            val map = parseSimpleJsonObject(item)
+            val id = map["id"] ?: continue
+            val command = map["command"] ?: ""
+            val payload = map["payload"] ?: ""
+            val targetPhone = map["targetPhone"] ?: ""
+            val relatedEntityId = map["relatedEntityId"] ?: ""
+            val createdAt = map["createdAt"]?.toLongOrNull() ?: System.currentTimeMillis()
+            val retryCount = map["retryCount"]?.toIntOrNull() ?: 0
+            val lastAttemptAt = map["lastAttemptAt"]?.toLongOrNull() ?: 0L
+            val acknowledged = map["acknowledged"]?.toBoolean() ?: false
+            list.add(
+                PendingOutboxMessage(
+                    id = id,
+                    command = command,
+                    payload = payload,
+                    targetPhone = targetPhone,
+                    relatedEntityId = relatedEntityId,
+                    createdAt = createdAt,
+                    retryCount = retryCount,
+                    lastAttemptAt = lastAttemptAt,
+                    acknowledged = acknowledged
+                )
+            )
+        }
+        return list
     }
 
     private fun encodeExpenses(list: List<ExpenseRecord>): String {
@@ -2199,6 +3798,8 @@ class PosRepository(
     }
 
     companion object {
+        private val idSequence = java.util.concurrent.atomic.AtomicLong(1000L)
+
         const val KEY_CASHIERS = "pos_cashiers_json"
         const val KEY_ACTIVE_CASHIER_ID = "pos_active_cashier_id"
         const val KEY_CATEGORIES = "pos_categories_json"
@@ -2208,6 +3809,13 @@ class PosRepository(
         const val KEY_SALES = "pos_sales_json"
         const val KEY_EXPENSES = "pos_expenses_json"
         const val KEY_PAYMENT_TRANSACTIONS = "pos_payment_transactions_json"
+        const val KEY_RESERVATIONS = "pos_reservations_json"
+        const val KEY_BANK_NOTIFICATIONS = "pos_bank_notifications_json"
+        const val KEY_OUTBOX_MESSAGES = "pos_outbox_messages_json"
+        const val KEY_PROCESSED_MSG_IDS = "pos_processed_msg_ids"
+        const val KEY_LOCAL_STORE_ID = "pos_local_store_id"
+        const val KEY_PEER_STORE_ID = "pos_peer_store_id"
+        const val KEY_PEER_PHONE = "pos_peer_phone"
 
         @Volatile
         private var INSTANCE: PosRepository? = null

@@ -56,12 +56,17 @@ case "`uname`" in
     ;;
 esac
 
+APP_HOME="$(cd -P -- "$(dirname -- "$0")" && pwd -P)"
+
 CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
 
 # Determine the Java command to use to start the JVM.
+if [ -z "$JAVA_HOME" ] && [ -x "/tmp/jdk17/bin/java" ] ; then
+    JAVA_HOME="/tmp/jdk17"
+fi
+
 if [ -n "$JAVA_HOME" ] ; then
     if [ -x "$JAVA_HOME/jre/sh/java" ] ; then
-        # IBM's JDK on AIX uses strange locations for the executables
         JAVACMD="$JAVA_HOME/jre/sh/java"
     else
         JAVACMD="$JAVA_HOME/bin/java"
@@ -80,4 +85,5 @@ Please set the JAVA_HOME variable in your environment to match the
 location of your Java installation."
 fi
 
-exec "$JAVACMD" "$@"
+exec "$JAVACMD" "-Dorg.gradle.appname=$APP_BASE_NAME" -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"
+
