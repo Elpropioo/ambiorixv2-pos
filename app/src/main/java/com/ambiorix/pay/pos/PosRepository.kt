@@ -2241,7 +2241,8 @@ class PosRepository(
         }
 
         // Validate origin store is not self
-        if (parsed.src != null && parsed.src.equals(getLocalStoreId(), ignoreCase = true) && !AmbiorixSmsProtocol.isAckOrResponseCommand(parsed.command)) {
+        val parsedSrc = parsed.src
+        if (parsedSrc != null && parsedSrc.equals(getLocalStoreId(), ignoreCase = true) && !AmbiorixSmsProtocol.isAckOrResponseCommand(parsed.command)) {
             val isOwnLocalEntity = (parsed.id != null && _reservations.value.any { it.id == parsed.id && it.deviceId.startsWith("dev-") }) ||
                 (parsed.tx != null && _outboxMessages.value.any { it.relatedEntityId == parsed.tx })
             if (isOwnLocalEntity || context == null) {
@@ -2249,9 +2250,9 @@ class PosRepository(
             }
             // On a real Android device, if a remote peer SMS arrives with src == default localStoreId (because localStoreId wasn't customized),
             // automatically adopt the opposite store identity (PIZZERIA <-> HELADERIA) so the coordination SMS and ACK work seamlessly.
-            val oppositeStore = if (parsed.src.equals("HELADERIA", ignoreCase = true)) "PIZZERIA" else "HELADERIA"
+            val oppositeStore = if (parsedSrc.equals("HELADERIA", ignoreCase = true)) "PIZZERIA" else "HELADERIA"
             configuredLocalStoreId = oppositeStore
-            configuredPeerStoreId = parsed.src.uppercase()
+            configuredPeerStoreId = parsedSrc.uppercase()
             storage.putString(KEY_LOCAL_STORE_ID, configuredLocalStoreId)
             storage.putString(KEY_PEER_STORE_ID, configuredPeerStoreId)
         }
