@@ -199,28 +199,41 @@ data class BusinessHoursConfig(
      * Serializa la configuración a formato JSON seguro para persistir en SharedPreferences.
      */
     fun toJson(): String {
-        val root = JSONObject()
-        root.put("isScheduleEnabled", isScheduleEnabled)
-        root.put("useSameScheduleAllDays", useSameScheduleAllDays)
+        try {
+            val root = JSONObject()
+            root.put("isScheduleEnabled", isScheduleEnabled)
+            root.put("useSameScheduleAllDays", useSameScheduleAllDays)
 
-        val daysArray = JSONArray()
-        activeDays.forEach { daysArray.put(it) }
-        root.put("activeDays", daysArray)
+            val daysArray = JSONArray()
+            activeDays.forEach { daysArray.put(it) }
+            root.put("activeDays", daysArray)
 
-        root.put("defaultOpenTime", defaultOpenTime.toMinutesString())
-        root.put("defaultCloseTime", defaultCloseTime.toMinutesString())
+            root.put("defaultOpenTime", defaultOpenTime.toMinutesString())
+            root.put("defaultCloseTime", defaultCloseTime.toMinutesString())
 
-        val customObj = JSONObject()
-        customDaySchedules.forEach { (day, sched) ->
-            val dObj = JSONObject()
-            dObj.put("isOpen", sched.isOpen)
-            dObj.put("openTime", sched.openTime.toMinutesString())
-            dObj.put("closeTime", sched.closeTime.toMinutesString())
-            customObj.put(day.toString(), dObj)
+            val customObj = JSONObject()
+            customDaySchedules.forEach { (day, sched) ->
+                val dObj = JSONObject()
+                dObj.put("isOpen", sched.isOpen)
+                dObj.put("openTime", sched.openTime.toMinutesString())
+                dObj.put("closeTime", sched.closeTime.toMinutesString())
+                customObj.put(day.toString(), dObj)
+            }
+            root.put("customDaySchedules", customObj)
+
+            val serialized = root.toString()
+            if (!serialized.isNullOrBlank() && serialized.contains("isScheduleEnabled")) {
+                return serialized
+            }
+        } catch (_: Throwable) {
+            // Fallback para entornos JVM sin org.json nativo
         }
-        root.put("customDaySchedules", customObj)
 
-        return root.toString()
+        val daysJson = activeDays.joinToString(",")
+        val customEntries = customDaySchedules.entries.joinToString(",") { (day, sched) ->
+            "\"$day\":{\"isOpen\":${sched.isOpen},\"openTime\":\"${sched.openTime.toMinutesString()}\",\"closeTime\":\"${sched.closeTime.toMinutesString()}\"}"
+        }
+        return "{\"isScheduleEnabled\":$isScheduleEnabled,\"useSameScheduleAllDays\":$useSameScheduleAllDays,\"activeDays\":[$daysJson],\"defaultOpenTime\":\"${defaultOpenTime.toMinutesString()}\",\"defaultCloseTime\":\"${defaultCloseTime.toMinutesString()}\",\"customDaySchedules\":{$customEntries}}"
     }
 
     companion object {
@@ -237,38 +250,97 @@ data class BusinessHoursConfig(
 
         fun fromJson(jsonStr: String?): BusinessHoursConfig {
             if (jsonStr.isNullOrBlank()) return BusinessHoursConfig()
-            return try {
+            try {
                 val root = JSONObject(jsonStr)
-                val isScheduleEnabled = root.optBoolean("isScheduleEnabled", false)
-                val useSameScheduleAllDays = root.optBoolean("useSameScheduleAllDays", true)
+                if (root.has("isScheduleEnabled") || root.has("useSameScheduleAllDays") || root.has("activeDays")) {
+                    val isScheduleEnabled = root.optBoolean("isScheduleEnabled", false)
+                    val useSameScheduleAllDays = root.optBoolean("useSameScheduleAllDays", true)
 
-                val activeDaysSet = mutableSetOf<Int>()
-                val daysArray = root.optJSONArray("activeDays")
-                if (daysArray != null) {
-                    for (i in 0 until daysArray.length()) {
-                        activeDaysSet.add(daysArray.getInt(i))
+                    val activeDaysSet = mutableSetOf<Int>()
+                    val daysArray = root.optJSONArray("activeDays")
+                    if (daysArray != null) {
+                        for (i in 0 until daysArray.length()) {
+                            activeDaysSet.add(daysArray.getInt(i))
+                        }
+                    } else {
+                        activeDaysSet.addAll(listOf(1, 2, 3, 4, 5, 6))
                     }
+
+                    val openTimeStr = root.optString("defaultOpenTime", "08:00")
+                    val closeTimeStr = root.optString("defaultCloseTime", "20:00")
+
+                    val customMap = mutableMapOf<Int, DaySchedule>()
+                    val customObj = root.optJSONObject("customDaySchedules")
+                    if (customObj != null) {
+                        val keys = customObj.keys()
+                        while (keys.hasNext()) {
+                            val key = keys.next()
+                            val dayInt = key.toIntOrNull() ?: continue
+                            val dObj = customObj.getJSONObject(key)
+                            val isOpen = dObj.optBoolean("isOpen", true)
+                            val oTime = TimeOfDay.parse(dObj.optString("openTime", "08:00"))
+                            val cTime = TimeOfDay.parse(dObj.optString("closeTime", "20:00"))
+                            customMap[dayInt] = DaySchedule(isOpen, oTime, cTime)
+                        }
+                    } else {
+                        customMap.putAll(defaultCustomSchedules())
+                    }
+
+                    return BusinessHoursConfig(
+                        isScheduleEnabled = isScheduleEnabled,
+                        useSameScheduleAllDays = useSameScheduleAllDays,
+                        activeDays = activeDaysSet,
+                        defaultOpenTime = TimeOfDay.parse(openTimeStr),
+                        defaultCloseTime = TimeOfDay.parse(closeTimeStr),
+                        customDaySchedules = customMap
+                    )
+                }
+            } catch (_: Throwable) {
+                // Fallback a parser ligero si org.json lanza Stub! en JVM unit tests
+            }
+
+            return parseJsonFallback(jsonStr)
+        }
+
+        private fun parseJsonFallback(jsonStr: String): BusinessHoursConfig {
+            return try {
+                val trimmed = jsonStr.trim()
+                if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return BusinessHoursConfig()
+
+                val isScheduleEnabled = Regex(""""isScheduleEnabled"\s*:\s*(true|false)""")
+                    .find(trimmed)?.groupValues?.get(1)?.toBooleanStrictOrNull() ?: false
+                val useSameScheduleAllDays = Regex(""""useSameScheduleAllDays"\s*:\s*(true|false)""")
+                    .find(trimmed)?.groupValues?.get(1)?.toBooleanStrictOrNull() ?: true
+
+                val activeDaysMatch = Regex(""""activeDays"\s*:\s*\[([^\]]*)]""").find(trimmed)
+                val activeDaysSet = if (activeDaysMatch != null) {
+                    activeDaysMatch.groupValues[1]
+                        .split(",")
+                        .mapNotNull { it.trim().toIntOrNull() }
+                        .toSet()
                 } else {
-                    activeDaysSet.addAll(listOf(1, 2, 3, 4, 5, 6))
+                    setOf(1, 2, 3, 4, 5, 6)
                 }
 
-                val openTimeStr = root.optString("defaultOpenTime", "08:00")
-                val closeTimeStr = root.optString("defaultCloseTime", "20:00")
+                val openTimeStr = Regex(""""defaultOpenTime"\s*:\s*"([^"]+)"""")
+                    .find(trimmed)?.groupValues?.get(1) ?: "08:00"
+                val closeTimeStr = Regex(""""defaultCloseTime"\s*:\s*"([^"]+)"""")
+                    .find(trimmed)?.groupValues?.get(1) ?: "20:00"
 
                 val customMap = mutableMapOf<Int, DaySchedule>()
-                val customObj = root.optJSONObject("customDaySchedules")
-                if (customObj != null) {
-                    val keys = customObj.keys()
-                    while (keys.hasNext()) {
-                        val key = keys.next()
-                        val dayInt = key.toIntOrNull() ?: continue
-                        val dObj = customObj.getJSONObject(key)
-                        val isOpen = dObj.optBoolean("isOpen", true)
-                        val oTime = TimeOfDay.parse(dObj.optString("openTime", "08:00"))
-                        val cTime = TimeOfDay.parse(dObj.optString("closeTime", "20:00"))
+                val customBlockMatch = Regex(""""customDaySchedules"\s*:\s*\{(.+)\}\s*\}\s*$""").find(trimmed)
+                if (customBlockMatch != null) {
+                    val entriesBlock = customBlockMatch.groupValues[1]
+                    val dayPattern = Regex(""""(\d+)"\s*:\s*\{\s*"isOpen"\s*:\s*(true|false)\s*,\s*"openTime"\s*:\s*"([^"]+)"\s*,\s*"closeTime"\s*:\s*"([^"]+)"\s*\}""")
+                    for (match in dayPattern.findAll(entriesBlock)) {
+                        val dayInt = match.groupValues[1].toIntOrNull() ?: continue
+                        val isOpen = match.groupValues[2].toBooleanStrictOrNull() ?: true
+                        val oTime = TimeOfDay.parse(match.groupValues[3])
+                        val cTime = TimeOfDay.parse(match.groupValues[4])
                         customMap[dayInt] = DaySchedule(isOpen, oTime, cTime)
                     }
-                } else {
+                }
+                if (customMap.isEmpty()) {
                     customMap.putAll(defaultCustomSchedules())
                 }
 
@@ -280,7 +352,7 @@ data class BusinessHoursConfig(
                     defaultCloseTime = TimeOfDay.parse(closeTimeStr),
                     customDaySchedules = customMap
                 )
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 BusinessHoursConfig()
             }
         }

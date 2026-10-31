@@ -252,7 +252,11 @@ object NequiSmsParser {
 
             return digitsOnly.toLong()
         } catch (e: Exception) {
-            Log.w(TAG, "Error interpretando monto '$raw': ${e.message}")
+            try {
+                Log.w(TAG, "Error interpretando monto '$raw': ${e.message}")
+            } catch (_: Throwable) {
+                // Ignorar en pruebas unitarias JVM donde android.util.Log no está mockeado
+            }
             return null
         }
     }

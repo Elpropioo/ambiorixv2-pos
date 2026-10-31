@@ -27,19 +27,26 @@ class PaymentNotificationParser {
         """(?i)([0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,][0-9]{1,2})?|[0-9]+)\s*(?:pesos|cop\b)"""
     )
 
-    // Patrón 1: "... de <Nombre Completo>" (después de un monto o verbo de recepción)
+    // Palabras que no pueden formar parte del nombre de una persona en notificaciones bancarias
+    private val senderStopWordsRegex =
+        """(?:el|la|los|las|un|una|al|del|de|a|en|por|con|sin|para|desde|hacia|hasta|exitosamente|hoy|ayer|saldo|disponible|comisi[oó]n|ref|referencia|cuenta|ahorros|corriente|nequi|daviplata|bancolombia|breb|bre-b|transferencia|pago|giro|abono|consignaci[oó]n|valor|pesos|cop|plata|dinero|exitoso|exitosa|aprobado|aprobada|recibido|recibida)"""
+
+    // Patrón 1: "... de <Nombre Completo>" (después de un verbo de recepción y/o monto con puntos o comas como $25.000)
+    // Nota: (?:(?![.!?](?:\s|$))[^\n])*? permite puntos y comas dentro de cifras numéricas (ej. $25.000 o $50,000.00)
+    // sin cruzar el final de una oración.
     private val senderAfterDePattern: Pattern = Pattern.compile(
-        """(?i)(?:recibiste|recibi[oó]|has\s+recibido|te\s+enviaron|te\s+pasaron|transferencia(?:\s+de)?|pago(?:\s+de)?)[^.!\n]*?\bde\s+([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+){0,5}?)(?=\s+(?:el\s+\d|a\s+tu\b|en\s+tu\b|a\s+trav[eé]s\b|exitosamente\b|por\s+\$|con\s+éxito\b)|[.,!]|$)"""
+        """(?i)(?:recibiste|recibi[oó]|has\s+recibido|te\s+enviaron|te\s+pasaron|te\s+transfirieron|transferencia|pago|giro|abono|consignaci[oó]n)(?:(?![.!?](?:\s|$))[^\n])*?\bde\s+((?!$senderStopWordsRegex\b)[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+(?:\s+(?!$senderStopWordsRegex\b)[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+){0,5})(?=\s+(?:$senderStopWordsRegex\b|\$|\d)|[.,!?;:]|$)"""
     )
 
     // Patrón 2: "<Nombre Completo> te transfirió / te envió / te pasó"
     private val senderBeforeVerbPattern: Pattern = Pattern.compile(
-        """(?i)(?:¡?te\s+enviaron\s+plata!?\s*|¡?te\s+lleg[oó]\s+plata!?\s*|^|[.!?]\s*)([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+){0,5}?)\s+te\s+(?:transfiri[oó]|envi[oó]|pas[oó]|pag[oó]|consign[oó])\b"""
+        """(?i)(?:¡?te\s+enviaron\s+plata!?\s*|¡?te\s+lleg[oó]\s+plata!?\s*|^|[.!?]\s*)((?!$senderStopWordsRegex\b)[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+(?:\s+(?!$senderStopWordsRegex\b)[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+){0,5})\s+te\s+(?:transfiri[oó]|envi[oó]|pas[oó]|pag[oó]|consign[oó])\b"""
     )
 
     private val invalidSenderWords = setOf(
         "tu", "su", "mi", "cuenta", "nequi", "bancolombia", "daviplata",
-        "plata", "dinero", "pesos", "transferencia", "pago", "saldo", "disponible", "breb"
+        "plata", "dinero", "pesos", "transferencia", "pago", "saldo", "disponible", "breb",
+        "ahorros", "corriente", "banco", "recepcion", "notificacion", "exito", "valor"
     )
 
     /**
@@ -87,16 +94,16 @@ class PaymentNotificationParser {
 
         val cleanLine = rawBody.replace("\r\n", " ").replace("\n", " ").replace(Regex("\\s+"), " ").trim()
 
-        // 2. Buscar patrón "... de <Nombre>"
+        // 2. Buscar patrón "... de <Nombre>" (iterando por si hay más de una coincidencia en la frase)
         val deMatcher = senderAfterDePattern.matcher(cleanLine)
-        if (deMatcher.find()) {
+        while (deMatcher.find()) {
             val candidate = sanitizeSenderCandidate(deMatcher.group(1))
             if (candidate != null) return candidate
         }
 
         // 3. Buscar patrón "<Nombre> te transfirió / te envió"
         val beforeMatcher = senderBeforeVerbPattern.matcher(cleanLine)
-        if (beforeMatcher.find()) {
+        while (beforeMatcher.find()) {
             val candidate = sanitizeSenderCandidate(beforeMatcher.group(1))
             if (candidate != null) return candidate
         }

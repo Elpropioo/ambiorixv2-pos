@@ -110,6 +110,18 @@ class PaymentNotificationParserTest {
         )
         assertEquals("LAURA GÓMEZ", sender3)
 
+        val sender4 = parser.extractSenderName(
+            "Bancolombia",
+            "Bancolombia le informa recepción de transferencia de Andrés Felipe Morales por $50,000.00 en su cuenta de ahorros."
+        )
+        assertEquals("Andrés Felipe Morales", sender4)
+
+        val sender5 = parser.extractSenderName(
+            "Nequi",
+            "Recibiste $1.250.000 de Juan Carlos Gómez exitosamente."
+        )
+        assertEquals("Juan Carlos Gómez", sender5)
+
         val noSender = parser.extractSenderName(
             "Bancolombia",
             "Transferencia recibida por $50.000 en su cuenta."
