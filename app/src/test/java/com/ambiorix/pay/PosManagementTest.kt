@@ -931,7 +931,7 @@ class PosManagementTest {
     // 29. Agrupación precisa de productos vendidos: Combos no inflan componentes individuales
     @Test
     fun testAgrupacionProductosVendidosYCombos() {
-        val testDate = "2026-10-15"
+        val testDate = repository.getTodayDateKey()
         val prodBase = repository.createProduct(
             name = "Porción Pizza",
             basePrice = 15000L,
@@ -945,7 +945,13 @@ class PosManagementTest {
             basePrice = 28000L,
             categoryId = "combos",
             isCombo = true,
-            comboComponents = listOf(com.ambiorix.pay.pos.ComboComponent(productId = prodBase.id, quantity = 2))
+            comboItems = listOf(
+                com.ambiorix.pay.pos.ComboItem(
+                    productId = prodBase.id,
+                    productName = prodBase.name,
+                    quantity = 2
+                )
+            )
         ).getOrThrow()
         assertTrue("Debe ser un producto combo", comboProd.isCombo)
 
@@ -963,11 +969,9 @@ class PosManagementTest {
             items = listOf(comboItem),
             subtotal = 56000L,
             discount = 0L,
+            total = 56000L,
             paymentMethod = "NEQUI",
-            cashReceived = 0L,
-            nequiAmount = 56000L,
-            cashierName = "Laura Gómez",
-            dateStrOverride = testDate
+            cashierName = "Laura Gómez"
         ).getOrThrow()
 
         val summary = repository.getDailyFinancialSummary(testDate)
@@ -978,7 +982,7 @@ class PosManagementTest {
         assertTrue(comboSold!!.isCombo)
         assertEquals("Combo Pareja Pizza", comboSold.productName)
         assertEquals(28000L, comboSold.unitSalePrice)
-        assertEquals(2, comboSold.quantitySold)
+        assertEquals(2, comboSold.totalQuantity)
         assertNull(
             "El componente individual no debe inflar la lista de productos vendidos por sí solo",
             summary.productsSold.find { it.productId == prodBase.id }
