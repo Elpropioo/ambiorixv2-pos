@@ -57,32 +57,45 @@ object NequiSmsParser {
         "gana", "sorteo", "promocion", "promoción", "entra ya a", "participa"
     )
 
+    // Palabras que nunca forman parte del nombre real de un remitente
+    private val NON_PERSON_WORDS = setOf(
+        "exitosamente", "exito", "éxito", "exitoso", "exitosa",
+        "cuenta", "nequi", "negocios", "daviplata", "bancolombia", "breb",
+        "saldo", "disponible", "transferencia", "pago", "pesos", "cop", "plata", "dinero",
+        "tu", "su", "mi", "el", "la", "en", "por", "con", "para", "hoy", "ayer"
+    )
+
     /**
      * Patrón primario:
      * "Notificacion Nequi: el negocio (TECNICABLES, nombre ficticio) recibió $1 de SANTIAGO ALEJANDRO MORGAN AVILA el 19/10/2026 a las 07:11 p.m. a través de Bre-B."
      */
     private val NEQUI_PRIMARY_PATTERN = Regex(
         "(?i)^\\s*(?:Notificaci[oó]n\\s+Nequi\\s*:\\s*)?" +
-                "el\\s+negocio\\s*(?:\\(([^)]+)\\)|([A-Za-z0-9ÁÉÍÓÚÑáéíóúñ\\s.,-]+?))\\s+" +
+                "el\\s+negocio\\s*(?:\\(([^)]+)\\)|([A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ\\s.,-]+?))\\s+" +
                 "recibi[oó]\\s+\\$\\s*([0-9.,]+)\\s+de\\s+" +
-                "([A-Za-zÁÉÍÓÚÑáéíóúñ\\s]+?)" +
-                "(?:\\s+en\\s+tu\\s+Nequi(?:\\s+Negocios)?)?" +
+                "([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\\s]+?)" +
+                "(?:\\s+(?:exitosamente|con\\s+[eé]xito|exitoso|exitosa))?" +
+                "(?:\\s+(?:en|a)\\s+tu\\s+(?:cuenta(?:\\s+Nequi)?|Nequi(?:\\s+Negocios)?))?" +
                 "(?:\\s+el\\s+([0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}(?:\\s+a\\s+las\\s+[0-9]{1,2}:[0-9]{2}(?:\\s*[a-z. ]+)?)?))?" +
                 "(?:\\s+a\\s+trav[eé]s\\s+de\\s+([A-Za-z0-9\\-_ ]+?))?" +
+                "(?:\\s+(?:exitosamente|con\\s+[eé]xito|exitoso|exitosa))?" +
                 "(?:\\.?\\s*(?:Ref|Referencia)\\.?\\s*:?\\s*[A-Za-z0-9\\-]+)?\\.?\\s*$"
     )
 
     /**
      * Patrón secundario para variantes futuras directas de Nequi:
      * ej: "Nequi: Recibiste $35.000 de JUAN PEREZ el 19/10/2026 a las 03:45 p.m."
+     * o "Recibiste $1.250.000 de Juan Carlos Gómez exitosamente."
      */
     private val NEQUI_SECONDARY_PATTERN = Regex(
         "(?i)^\\s*(?:Notificaci[oó]n\\s+Nequi\\s*:\\s*|Nequi\\s*:\\s*)?" +
-                "(?:recibiste|te\\s+enviaron|te\\s+pasaron)\\s+\\$\\s*([0-9.,]+)\\s+de\\s+" +
-                "([A-Za-zÁÉÍÓÚÑáéíóúñ\\s]+?)" +
-                "(?:\\s+en\\s+tu\\s+Nequi(?:\\s+Negocios)?)?" +
+                "(?:recibiste|has\\s+recibido|te\\s+enviaron|te\\s+pasaron)\\s+\\$\\s*([0-9.,]+)\\s+de\\s+" +
+                "([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\\s]+?)" +
+                "(?:\\s+(?:exitosamente|con\\s+[eé]xito|exitoso|exitosa))?" +
+                "(?:\\s+(?:en|a)\\s+tu\\s+(?:cuenta(?:\\s+Nequi)?|Nequi(?:\\s+Negocios)?))?" +
                 "(?:\\s+el\\s+([0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}(?:\\s+a\\s+las\\s+[0-9]{1,2}:[0-9]{2}(?:\\s*[a-z. ]+)?)?))?" +
                 "(?:\\s+a\\s+trav[eé]s\\s+de\\s+([A-Za-z0-9\\-_ ]+?))?" +
+                "(?:\\s+(?:exitosamente|con\\s+[eé]xito|exitoso|exitosa))?" +
                 "(?:\\.?\\s*(?:Ref|Referencia)\\.?\\s*:?\\s*[A-Za-z0-9\\-]+)?\\.?\\s*$"
     )
 
@@ -125,7 +138,7 @@ object NequiSmsParser {
             val rawBiz = primaryMatch.groups[1]?.value ?: primaryMatch.groups[2]?.value
             val cleanBiz = cleanBusinessName(rawBiz)
             val rawAmount = primaryMatch.groups[3]?.value
-            val rawSenderName = primaryMatch.groups[4]?.value?.trim()
+            val rawSenderName = cleanSenderName(primaryMatch.groups[4]?.value)
             val rawDateTime = primaryMatch.groups[5]?.value?.trim()
             val rawChannel = primaryMatch.groups[6]?.value?.trim()
 
@@ -160,7 +173,7 @@ object NequiSmsParser {
         val secondaryMatch = NEQUI_SECONDARY_PATTERN.matchEntire(normalized)
         if (secondaryMatch != null) {
             val rawAmount = secondaryMatch.groups[1]?.value
-            val rawSenderName = secondaryMatch.groups[2]?.value?.trim()
+            val rawSenderName = cleanSenderName(secondaryMatch.groups[2]?.value)
             val rawDateTime = secondaryMatch.groups[3]?.value?.trim()
             val rawChannel = secondaryMatch.groups[4]?.value?.trim()
 
@@ -190,6 +203,19 @@ object NequiSmsParser {
     }
 
     /**
+     * Limpia el nombre del remitente eliminando sufijos bancarios residuales y espacios sobrantes.
+     */
+    fun cleanSenderName(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        var cleaned = raw.replace(Regex("\\s+"), " ").trim()
+        cleaned = cleaned.replace(
+            Regex("(?i)\\s+(?:exitosamente|con\\s+[eé]xito|exitoso|exitosa|(?:en|a)\\s+tu\\s+(?:cuenta(?:\\s+nequi)?|nequi(?:\\s+negocios)?)|hoy|ayer)$"),
+            ""
+        ).trim()
+        return cleaned.ifBlank { null }
+    }
+
+    /**
      * Limpia el nombre del negocio receptor extrayendo la razón social limpia.
      * Ejemplo: "TECNICABLES, nombre ficticio" -> "TECNICABLES"
      */
@@ -203,6 +229,7 @@ object NequiSmsParser {
     /**
      * Valida que una cadena represente un nombre de persona verosímil:
      * - Contiene al menos una palabra alfabética de 2 o más letras.
+     * - No contiene palabras reservadas de notificaciones bancarias (ej. "exitosamente", "cuenta").
      * - No es un número, enlace web o código.
      */
     fun isValidPersonName(name: String?): Boolean {
@@ -210,11 +237,15 @@ object NequiSmsParser {
         val trimmed = name.trim()
         if (trimmed.length < 2) return false
 
-        // Debe contener únicamente letras y espacios (se toleran tildes)
-        val validCharsOnly = trimmed.matches(Regex("^[A-Za-zÁÉÍÓÚÑáéíóúñ\\s]+$"))
+        // Debe contener únicamente letras y espacios (se toleran tildes y diéresis)
+        val validCharsOnly = trimmed.matches(Regex("^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ\\s]+$"))
         if (!validCharsOnly) return false
 
         val words = trimmed.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.isEmpty() || words.size > 6) return false
+
+        if (words.any { it.lowercase() in NON_PERSON_WORDS }) return false
+
         // Debe tener al menos una palabra con más de una letra
         return words.any { it.length >= 2 }
     }

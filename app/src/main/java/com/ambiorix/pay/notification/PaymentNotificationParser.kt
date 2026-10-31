@@ -35,12 +35,12 @@ class PaymentNotificationParser {
     // Nota: (?:(?![.!?](?:\s|$))[^\n])*? permite puntos y comas dentro de cifras numéricas (ej. $25.000 o $50,000.00)
     // sin cruzar el final de una oración.
     private val senderAfterDePattern: Pattern = Pattern.compile(
-        """(?i)(?:recibiste|recibi[oó]|has\s+recibido|te\s+enviaron|te\s+pasaron|te\s+transfirieron|transferencia|pago|giro|abono|consignaci[oó]n)(?:(?![.!?](?:\s|$))[^\n])*?\bde\s+((?!$senderStopWordsRegex\b)[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+(?:\s+(?!$senderStopWordsRegex\b)[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+){0,5})(?=\s+(?:$senderStopWordsRegex\b|\$|\d)|[.,!?;:]|$)"""
+        """(?i)(?:recibiste|recibi[oó]|has\s+recibido|te\s+enviaron|te\s+pasaron|te\s+transfirieron|transferencia|pago|giro|abono|consignaci[oó]n)(?:(?![.!?](?:\s|$))[^\n])*?\bde\s+((?!$senderStopWordsRegex(?=\s|[.,!?;:]|$))[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+(?:\s+(?!$senderStopWordsRegex(?=\s|[.,!?;:]|$))[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+){0,5})(?=\s+(?:$senderStopWordsRegex(?=\s|[.,!?;:]|$)|\$|\d)|[.,!?;:]|$)"""
     )
 
     // Patrón 2: "<Nombre Completo> te transfirió / te envió / te pasó"
     private val senderBeforeVerbPattern: Pattern = Pattern.compile(
-        """(?i)(?:¡?te\s+enviaron\s+plata!?\s*|¡?te\s+lleg[oó]\s+plata!?\s*|^|[.!?]\s*)((?!$senderStopWordsRegex\b)[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+(?:\s+(?!$senderStopWordsRegex\b)[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+){0,5})\s+te\s+(?:transfiri[oó]|envi[oó]|pas[oó]|pag[oó]|consign[oó])\b"""
+        """(?i)(?:¡?te\s+enviaron\s+plata!?\s*|¡?te\s+lleg[oó]\s+plata!?\s*|^|[.!?]\s*)((?!$senderStopWordsRegex(?=\s|[.,!?;:]|$))[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+(?:\s+(?!$senderStopWordsRegex(?=\s|[.,!?;:]|$))[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+){0,5})\s+te\s+(?:transfiri[oó]|envi[oó]|pas[oó]|pag[oó]|consign[oó])(?=\s|[.,!?;:]|$)"""
     )
 
     private val invalidSenderWords = setOf(
@@ -86,13 +86,14 @@ class PaymentNotificationParser {
         val rawBody = text?.trim().orEmpty()
         if (rawBody.isEmpty()) return null
 
-        // 1. Verificar primero si coincide con el formato estructurado de Nequi (ej. Bre-B / Negocios)
-        val smsResult = NequiSmsParser.parse(null, rawBody)
-        if (smsResult is com.ambiorix.pay.sms.SmsPaymentParseResult.Success) {
-            return smsResult.payment.senderName.trim()
-        }
-
         val cleanLine = rawBody.replace("\r\n", " ").replace("\n", " ").replace(Regex("\\s+"), " ").trim()
+
+        // 1. Verificar primero si coincide con el formato estructurado de Nequi (ej. Bre-B / Negocios)
+        val smsResult = NequiSmsParser.parse(null, cleanLine)
+        if (smsResult is com.ambiorix.pay.sms.SmsPaymentParseResult.Success) {
+            val cleanedSmsSender = sanitizeSenderCandidate(smsResult.payment.senderName)
+            if (cleanedSmsSender != null) return cleanedSmsSender
+        }
 
         // 2. Buscar patrón "... de <Nombre>" (iterando por si hay más de una coincidencia en la frase)
         val deMatcher = senderAfterDePattern.matcher(cleanLine)
@@ -112,16 +113,16 @@ class PaymentNotificationParser {
     }
 
     private fun sanitizeSenderCandidate(raw: String?): String? {
-        if (raw.isNullOrBlank()) return null
-        val trimmed = raw.trim()
-        val words = trimmed.split(Regex("\\s+")).filter { it.isNotBlank() }
+        val cleaned = NequiSmsParser.cleanSenderName(raw) ?: return null
+        val words = cleaned.split(Regex("\\s+")).filter { it.isNotBlank() }
         if (words.isEmpty() || words.size > 6) return null
 
         val normalizedWords = words.map { ColombianPaymentKeywords.normalizeText(it) }
         if (normalizedWords.any { it in invalidSenderWords }) return null
 
-        if (!NequiSmsParser.isValidPersonName(trimmed)) return null
-        return words.joinToString(" ")
+        val normalizedJoin = words.joinToString(" ")
+        if (!NequiSmsParser.isValidPersonName(normalizedJoin)) return null
+        return normalizedJoin
     }
 
     private fun cutBeforeBalanceWords(text: String): String {
