@@ -1,5 +1,6 @@
 package com.ambiorix.pay.notification
 
+import com.ambiorix.pay.sms.NequiSmsParser
 import java.util.regex.Pattern
 
 /**
@@ -14,6 +15,7 @@ import java.util.regex.Pattern
  * - $35.000,50 (normaliza a entero 35000)
  *
  * Ignora montos que vengan después de palabras como "saldo", "disponible", "comisión".
+ * También extrae el nombre completo del remitente cuando está disponible en la notificación.
  */
 class PaymentNotificationParser {
 
@@ -23,6 +25,21 @@ class PaymentNotificationParser {
 
     private val amountSuffixPattern: Pattern = Pattern.compile(
         """(?i)([0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,][0-9]{1,2})?|[0-9]+)\s*(?:pesos|cop\b)"""
+    )
+
+    // Patrón 1: "... de <Nombre Completo>" (después de un monto o verbo de recepción)
+    private val senderAfterDePattern: Pattern = Pattern.compile(
+        """(?i)(?:recibiste|recibi[oó]|has\s+recibido|te\s+enviaron|te\s+pasaron|transferencia(?:\s+de)?|pago(?:\s+de)?)[^.!\n]*?\bde\s+([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+){0,5}?)(?=\s+(?:el\s+\d|a\s+tu\b|en\s+tu\b|a\s+trav[eé]s\b|exitosamente\b|por\s+\$|con\s+éxito\b)|[.,!]|$)"""
+    )
+
+    // Patrón 2: "<Nombre Completo> te transfirió / te envió / te pasó"
+    private val senderBeforeVerbPattern: Pattern = Pattern.compile(
+        """(?i)(?:¡?te\s+enviaron\s+plata!?\s*|¡?te\s+lleg[oó]\s+plata!?\s*|^|[.!?]\s*)([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+){0,5}?)\s+te\s+(?:transfiri[oó]|envi[oó]|pas[oó]|pag[oó]|consign[oó])\b"""
+    )
+
+    private val invalidSenderWords = setOf(
+        "tu", "su", "mi", "cuenta", "nequi", "bancolombia", "daviplata",
+        "plata", "dinero", "pesos", "transferencia", "pago", "saldo", "disponible", "breb"
     )
 
     /**
@@ -52,6 +69,52 @@ class PaymentNotificationParser {
         // buscar en el texto completo como fallback
         parsed = searchAmountInText(normalized)
         return if (parsed != null && parsed > 0) parsed else null
+    }
+
+    /**
+     * Extrae el nombre completo del remitente cuando está disponible en la notificación.
+     * Si la notificación no incluye remitente, retorna null sin inventar nombres.
+     */
+    fun extractSenderName(title: String?, text: String?): String? {
+        val rawBody = text?.trim().orEmpty()
+        if (rawBody.isEmpty()) return null
+
+        // 1. Verificar primero si coincide con el formato estructurado de Nequi (ej. Bre-B / Negocios)
+        val smsResult = NequiSmsParser.parse(null, rawBody)
+        if (smsResult is com.ambiorix.pay.sms.SmsPaymentParseResult.Success) {
+            return smsResult.payment.senderName.trim()
+        }
+
+        val cleanLine = rawBody.replace("\r\n", " ").replace("\n", " ").replace(Regex("\\s+"), " ").trim()
+
+        // 2. Buscar patrón "... de <Nombre>"
+        val deMatcher = senderAfterDePattern.matcher(cleanLine)
+        if (deMatcher.find()) {
+            val candidate = sanitizeSenderCandidate(deMatcher.group(1))
+            if (candidate != null) return candidate
+        }
+
+        // 3. Buscar patrón "<Nombre> te transfirió / te envió"
+        val beforeMatcher = senderBeforeVerbPattern.matcher(cleanLine)
+        if (beforeMatcher.find()) {
+            val candidate = sanitizeSenderCandidate(beforeMatcher.group(1))
+            if (candidate != null) return candidate
+        }
+
+        return null
+    }
+
+    private fun sanitizeSenderCandidate(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val trimmed = raw.trim()
+        val words = trimmed.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.isEmpty() || words.size > 6) return null
+
+        val normalizedWords = words.map { ColombianPaymentKeywords.normalizeText(it) }
+        if (normalizedWords.any { it in invalidSenderWords }) return null
+
+        if (!NequiSmsParser.isValidPersonName(trimmed)) return null
+        return words.joinToString(" ")
     }
 
     private fun cutBeforeBalanceWords(text: String): String {

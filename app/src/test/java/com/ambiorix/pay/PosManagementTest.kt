@@ -21,10 +21,10 @@ class PosManagementTest {
     @Test
     fun testCrearProducto() {
         val result = repository.createProduct(
-            name = "Helado de Maracuyá",
+            name = "Pizza Hawaiana",
             basePrice = 7000L,
-            categoryId = "helados",
-            description = "Sabor ácido y refrescante",
+            categoryId = "productos",
+            description = "Piña y jamón con queso mozzarella",
             stockQuantity = 25.0,
             unit = "unidades"
         )
@@ -32,9 +32,9 @@ class PosManagementTest {
         assertTrue("El producto debe crearse exitosamente", result.isSuccess)
         val product = result.getOrNull()
         assertNotNull(product)
-        assertEquals("Helado de Maracuyá", product!!.name)
+        assertEquals("Pizza Hawaiana", product!!.name)
         assertEquals(7000L, product.basePrice)
-        assertEquals("helados", product.categoryId)
+        assertEquals("productos", product.categoryId)
         assertEquals(25.0, product.stockQuantity, 0.001)
 
         val found = repository.products.value.find { it.id == product.id }
@@ -90,25 +90,25 @@ class PosManagementTest {
     @Test
     fun testAsignarYCambiarCategoria() {
         val created = repository.createProduct(
-            name = "Malteada Especial",
+            name = "Pizza Especial",
             basePrice = 12000L,
-            categoryId = "helados"
+            categoryId = "productos"
         ).getOrThrow()
 
-        assertEquals("helados", created.categoryId)
+        assertEquals("productos", created.categoryId)
 
         val updateResult = repository.updateProduct(
             id = created.id,
             name = created.name,
             basePrice = created.basePrice,
-            categoryId = "bebidas"
+            categoryId = "combos"
         )
 
         assertTrue(updateResult.isSuccess)
-        assertEquals("bebidas", updateResult.getOrThrow().categoryId)
+        assertEquals("combos", updateResult.getOrThrow().categoryId)
 
-        val productsInBebidas = repository.searchProducts("", categoryId = "bebidas")
-        assertTrue(productsInBebidas.any { it.id == created.id })
+        val productsInCombos = repository.searchProducts("", categoryId = "combos")
+        assertTrue(productsInCombos.any { it.id == created.id })
     }
 
     // 5. Asignar y cambiar fotografía (preservando el archivo interno)
@@ -932,7 +932,21 @@ class PosManagementTest {
     @Test
     fun testAgrupacionProductosVendidosYCombos() {
         val testDate = "2026-10-15"
-        val comboProd = repository.products.value.find { it.id == "prod-combo-1" }!!
+        val prodBase = repository.createProduct(
+            name = "Porción Pizza",
+            basePrice = 15000L,
+            categoryId = "productos",
+            stockQuantity = 20.0,
+            unit = "unidades"
+        ).getOrThrow()
+
+        val comboProd = repository.createProduct(
+            name = "Combo Pareja Pizza",
+            basePrice = 28000L,
+            categoryId = "combos",
+            isCombo = true,
+            comboComponents = listOf(com.ambiorix.pay.pos.ComboComponent(productId = prodBase.id, quantity = 2))
+        ).getOrThrow()
         assertTrue("Debe ser un producto combo", comboProd.isCombo)
 
         val comboItem = com.ambiorix.pay.pos.CartItem(
@@ -945,46 +959,31 @@ class PosManagementTest {
             totalPrice = comboProd.basePrice * 2
         )
 
-        // Registrar venta con fecha específica
-        val sale = com.ambiorix.pay.pos.SaleRecord(
-            id = "sale-combo-test-1",
-            saleNumber = "V-00999",
+        val sale = repository.completeSale(
             items = listOf(comboItem),
             subtotal = 56000L,
             discount = 0L,
-            total = 56000L,
             paymentMethod = "NEQUI",
+            cashReceived = 0L,
             nequiAmount = 56000L,
-            timestamp = "04:00 PM",
-            dateStr = testDate,
             cashierName = "Laura Gómez",
-            status = "COMPLETED"
-        )
-        // Guardar la venta en el repositorio
-        repository = com.ambiorix.pay.pos.PosRepository.createForTesting(storage)
-        val allSales = listOf(sale) + repository.sales.value
-        storage.putString(com.ambiorix.pay.pos.PosRepository.KEY_SALES, "") // Forzamos carga fresca
+            dateStrOverride = testDate
+        ).getOrThrow()
 
-        repository.recordPaymentTransaction(
-            method = "NEQUI",
-            amount = 56000L,
-            dateStr = testDate,
-            saleId = sale.id,
-            saleNumber = sale.saleNumber
-        )
-
-        // Completar venta a través del repo para el día de prueba
         val summary = repository.getDailyFinancialSummary(testDate)
-        // La transacción de Nequi computa 56000
         assertEquals(56000L, summary.totalNequi)
 
-        // Validar que en defaultSales (día date1) el combo está agrupado como Combo Pareja Dulce
-        val defaultSummary = repository.getDailyFinancialSummary("2026-10-05")
-        val comboSold = defaultSummary.productsSold.find { it.productId == "prod-combo-1" }
+        val comboSold = summary.productsSold.find { it.productId == comboProd.id }
         assertNotNull("El combo debe aparecer como producto vendido", comboSold)
         assertTrue(comboSold!!.isCombo)
-        assertEquals("Combo Pareja Dulce", comboSold.productName)
-        assertEquals(28000L, comboSold.unitSalePrice) // Precio histórico snapshot
+        assertEquals("Combo Pareja Pizza", comboSold.productName)
+        assertEquals(28000L, comboSold.unitSalePrice)
+        assertEquals(2, comboSold.quantitySold)
+        assertNull(
+            "El componente individual no debe inflar la lista de productos vendidos por sí solo",
+            summary.productsSold.find { it.productId == prodBase.id }
+        )
+        assertNotNull(sale.id)
     }
 
     // 30. Persistencia de gastos e historial de pagos
@@ -1077,6 +1076,20 @@ class PosManagementTest {
             localStoreId = "PIZZERIA",
             peerStoreId = "HELADERIA",
             peerPhone = "3001111111"
+        )
+        repoH.createProduct(
+            name = "Producto Base H",
+            basePrice = 10000L,
+            categoryId = "productos",
+            stockQuantity = 20.0,
+            unit = "unidades"
+        )
+        repoP.createProduct(
+            name = "Pizza Base P",
+            basePrice = 10000L,
+            categoryId = "productos",
+            stockQuantity = 20.0,
+            unit = "unidades"
         )
         bus.heladeriaRepo = repoH
         bus.pizzeriaRepo = repoP
@@ -1464,6 +1477,13 @@ class PosManagementTest {
         pizzeria.coordinationTransport = bus.pizzeriaTransport
         heladeria.configureStore("HELADERIA", "PIZZERIA", "3002222222")
         pizzeria.configureStore("PIZZERIA", "HELADERIA", "3001111111")
+        heladeria.createProduct(
+            name = "Producto Reserva",
+            basePrice = 27000L,
+            categoryId = "productos",
+            stockQuantity = 20.0,
+            unit = "unidades"
+        )
         bus.heladeriaRepo = heladeria
         bus.pizzeriaRepo = pizzeria
 
@@ -1514,6 +1534,119 @@ class PosManagementTest {
             reloadedHeladeria.reservations.value.find { it.id == res.id }!!.syncState
         )
     }
+
+    // G. Estado inicial Pizzería Natus: categorías base y catálogo vacío sin datos precargados de heladería
+    @Test
+    fun testCatalogoInicialVacioYCategoriasPizzeriaNatus() {
+        val freshStorage = InMemoryPosStorage()
+        val freshRepo = PosRepository.createForTesting(freshStorage)
+
+        val catIds = freshRepo.categories.value.map { it.id }
+        assertEquals(listOf("productos", "ingredientes", "combos"), catIds)
+        assertTrue("El catálogo inicial de productos debe estar vacío", freshRepo.products.value.isEmpty())
+        assertTrue("El catálogo inicial de ingredientes debe estar vacío", freshRepo.ingredients.value.isEmpty())
+        assertTrue("El catálogo inicial de toppings debe estar vacío", freshRepo.toppings.value.isEmpty())
+        assertTrue("El historial inicial de ventas debe estar vacío", freshRepo.sales.value.isEmpty())
+        assertTrue("El historial inicial de gastos debe estar vacío", freshRepo.expenses.value.isEmpty())
+        assertTrue("El historial inicial de transacciones debe estar vacío", freshRepo.paymentTransactions.value.isEmpty())
+    }
+
+    // H. Inventario centralizado (Insumos, Toppings, Materiales de operación) y Ajuste de Base de Caja
+    @Test
+    fun testInventarioCentralToppingsYAjusteBaseCaja() {
+        val storage = InMemoryPosStorage()
+        val repo = PosRepository.createForTesting(storage)
+
+        // 1. Registrar insumo de preparación, insumo de topping y material de operación
+        val baseHelado = repo.createIngredient("Base Helado Vainilla", "g", 2000.0, 300.0, 20L, "Insumos").getOrThrow()
+        val chispasIng = repo.createIngredient("Chispas de Chocolate", "g", 500.0, 50.0, 30L, "Insumos").getOrThrow()
+        val vasoMat = repo.createIngredient("Vasos 8oz", "unidades", 100.0, 15.0, 150L, "Empaques").getOrThrow()
+
+        // Actualizar clasificación a Materiales de operación
+        val updatedVaso = repo.updateIngredient(
+            id = vasoMat.id,
+            name = "Vasos 8oz",
+            unit = "unidades",
+            minStockAlert = 15.0,
+            unitCostCOP = 150L,
+            isActive = true,
+            category = "Materiales de operación"
+        ).getOrThrow()
+        assertEquals("Materiales de operación", updatedVaso.category)
+
+        // 2. Crear topping vinculado al insumo Chispas de Chocolate
+        val toppingChispas = repo.createTopping(
+            name = "Chispas de Chocolate",
+            price = 2000L,
+            ingredientId = chispasIng.id,
+            gramsRequired = 25.0
+        ).getOrThrow()
+        assertEquals(1, repo.toppings.value.size)
+
+        // 3. Crear producto personalizable con variantes (1 bola, 2 bolas) y receta vinculada a base + vaso
+        val copaHelado = repo.createProduct(
+            name = "Copa de Helado",
+            basePrice = 8000L,
+            categoryId = "productos",
+            recipe = listOf(
+                com.ambiorix.pay.pos.RecipeItem(baseHelado.id, baseHelado.name, 100.0, "g"),
+                com.ambiorix.pay.pos.RecipeItem(vasoMat.id, vasoMat.name, 1.0, "unidades")
+            ),
+            variants = listOf(
+                com.ambiorix.pay.pos.ProductVariant("bola-1", "1 Bola", 0L, 1.0),
+                com.ambiorix.pay.pos.ProductVariant("bola-2", "2 Bolas", 3500L, 2.0)
+            ),
+            allowedToppings = true
+        ).getOrThrow()
+        assertEquals(2, copaHelado.variants.size)
+        assertTrue(copaHelado.allowedToppings)
+
+        // 4. Vender 1 Copa de Helado con topping de Chispas en efectivo y verificar descuento de receta + topping + material
+        val cartItem = com.ambiorix.pay.pos.CartItem(
+            cartItemId = "ci-test-1",
+            productId = copaHelado.id,
+            productName = copaHelado.name,
+            variantId = "bola-1",
+            variantName = "1 Bola",
+            basePrice = 8000L,
+            variantPriceDelta = 0L,
+            unitPrice = 10000L,
+            quantity = 1,
+            toppings = listOf(toppingChispas),
+            totalPrice = 10000L,
+            estimatedCost = 2500L
+        )
+        val saleRes = repo.completeSale(
+            items = listOf(cartItem),
+            subtotal = 10000L,
+            discount = 0L,
+            total = 10000L,
+            paymentMethod = "CASH",
+            cashierName = "Laura Gómez"
+        )
+        assertTrue(saleRes.isSuccess)
+        assertEquals(1900.0, repo.ingredients.value.find { it.id == baseHelado.id }!!.currentStock, 0.01)
+        assertEquals(475.0, repo.ingredients.value.find { it.id == chispasIng.id }!!.currentStock, 0.01)
+        assertEquals(99.0, repo.ingredients.value.find { it.id == vasoMat.id }!!.currentStock, 0.01)
+
+        // 5. Ajustar base de caja con motivo obligatorio y verificar cierre de caja
+        val failEmptyReason = repo.adjustCashBase(150000L, "   ", "Laura Gómez")
+        assertTrue(failEmptyReason.isFailure)
+
+        val adjustedShift = repo.adjustCashBase(150000L, "Ajuste de sencillo inicial", "Laura Gómez").getOrThrow()
+        assertEquals(150000L, adjustedShift.initialCash)
+        assertTrue(adjustedShift.expenses.any { it.type == "BASE_ADJUSTMENT" && it.amount == 150000L })
+
+        // Registrar un gasto menor de $5.000
+        repo.addCashExpense("Compra de servilletas urgentes", 5000L)
+
+        // Esperado en caja = Base ($150.000) + Ventas efectivo ($10.000) - Otros movimientos ($5.000) = $155.000
+        val closedShift = repo.performBlindClose(155000L)
+        assertEquals(155000L, closedShift.expectedCash)
+        assertEquals(155000L, closedShift.countedCash)
+        assertEquals(0L, closedShift.difference)
+    }
 }
+
 
 

@@ -1,133 +1,74 @@
 package com.ambiorix.pay.ui.screens
 
-import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import com.ambiorix.pay.data.Payment
-import com.ambiorix.pay.pos.*
+import com.ambiorix.pay.data.*
+import com.ambiorix.pay.ui.components.HistoryScreenSkeleton
 import com.ambiorix.pay.ui.theme.*
-import java.text.NumberFormat
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
 
-private fun formatCOP(amount: Long): String {
-    val format = NumberFormat.getCurrencyInstance(Locale("es", "CO"))
-    format.maximumFractionDigits = 0
-    return format.format(amount)
-}
+private val WEEKDAY_HEADERS = listOf("L", "M", "M", "J", "V", "S", "D")
 
-private val MONTH_NAMES = listOf(
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
-)
-
-private val WEEKDAY_NAMES = listOf("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
-
-private val EXPENSE_CATEGORIES = listOf(
-    "Insumos", "Reposición inventario", "Transporte", "Servicios", "Mantenimiento", "Otros"
-)
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HistoryScreen(
-    payments: List<Payment> = emptyList(),
-    posRepository: PosRepository? = null,
+    payments: List<Payment>,
+    isLoading: Boolean = false,
+    errorMessage: String? = null,
+    onRetryLoad: () -> Unit = {},
     onBackClick: () -> Unit,
-    onClearHistory: () -> Unit = {}
+    onClearHistory: () -> Unit
 ) {
-    val context = LocalContext.current
-    val repository = remember(posRepository) {
-        posRepository ?: PosRepository.getInstance(context)
-    }
+    var showConfirmDelete by remember { mutableStateOf(false) }
 
-    val todayCalendar = remember { Calendar.getInstance() }
-    var currentYear by remember { mutableStateOf(todayCalendar.get(Calendar.YEAR)) }
-    var currentMonth by remember { mutableStateOf(todayCalendar.get(Calendar.MONTH) + 1) } // 1..12
-    var selectedDateStr by remember {
-        mutableStateOf(
-            String.format(
-                Locale.US,
-                "%04d-%02d-%02d",
-                todayCalendar.get(Calendar.YEAR),
-                todayCalendar.get(Calendar.MONTH) + 1,
-                todayCalendar.get(Calendar.DAY_OF_MONTH)
-            )
+    val todayKey = remember { PaymentHistoryCalculator.getTodayDayKey() }
+    var displayedYear by remember { mutableIntStateOf(todayKey.year) }
+    var displayedMonth by remember { mutableIntStateOf(todayKey.month) }
+    var selectedDayKey by remember { mutableStateOf(todayKey) }
+
+    // Recalcular resumen mensual y diario de forma reactiva cuando cambien los pagos o la fecha seleccionada
+    val monthlySummary = remember(payments, displayedYear, displayedMonth) {
+        PaymentHistoryCalculator.calculateMonthlySummary(
+            allPayments = payments,
+            year = displayedYear,
+            month = displayedMonth
         )
     }
 
-    var selectedTab by remember { mutableStateOf(0) } // 0: Nequi, 1: Efectivo, 2: Gastos, 3: Lo que se vendió
-    var currentRole by remember { mutableStateOf(PosRole.OWNER) }
-    var showPinDialog by remember { mutableStateOf(false) }
-    var pinInput by remember { mutableStateOf("") }
-    var pinError by remember { mutableStateOf(false) }
-
-    // Dialog states
-    var inspectingNequiTx by remember { mutableStateOf<PaymentTransaction?>(null) }
-    var inspectingProductOccurrences by remember { mutableStateOf<ProductSaleSummary?>(null) }
-    var showExpenseDialog by remember { mutableStateOf(false) }
-    var expenseToAnnul by remember { mutableStateOf<ExpenseRecord?>(null) }
-    var annulReasonInput by remember { mutableStateOf("") }
-
-    // Observables from repo
-    val allExpenses by repository.expenses.collectAsState()
-    val allPaymentTxns by repository.paymentTransactions.collectAsState()
-    val allSales by repository.sales.collectAsState()
-    val activeCashier by repository.activeCashier.collectAsState()
-
-    // Recompute summary for selected date whenever state changes
-    val dailySummary = remember(selectedDateStr, allExpenses, allPaymentTxns, allSales) {
-        repository.getDailyFinancialSummary(selectedDateStr)
-    }
-
-    // Calendar indicators for current month
-    val monthDays = remember(currentYear, currentMonth, allExpenses, allPaymentTxns, allSales) {
-        repository.getMonthCalendarDays(currentYear, currentMonth)
-    }
-
-    // Formatted date string for selected date
-    val formattedSelectedDateTitle = remember(selectedDateStr) {
-        try {
-            val parts = selectedDateStr.split("-")
-            val cal = Calendar.getInstance()
-            cal.set(parts[0].toInt(), parts[1].toInt() - 1, parts[2].toInt())
-            val dayOfWeek = SimpleDateFormat("EEEE", Locale("es", "CO")).format(cal.time)
-                .replaceFirstChar { it.uppercase() }
-            val dayOfMonth = parts[2].toInt()
-            val monthName = MONTH_NAMES[parts[1].toInt() - 1]
-            "$dayOfWeek, $dayOfMonth de $monthName de ${parts[0]}"
-        } catch (e: Exception) {
-            selectedDateStr
-        }
+    val dailySummary = remember(payments, selectedDayKey) {
+        PaymentHistoryCalculator.calculateDailySummary(
+            allPayments = payments,
+            selectedDay = selectedDayKey
+        )
     }
 
     Scaffold(
@@ -136,16 +77,15 @@ fun HistoryScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Historial de Ventas y Pagos",
+                            text = "Historial y Ganancias",
                             color = TextWhite,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
+                            fontSize = 18.sp
                         )
                         Text(
-                            text = "Auditoría Financiera Diaria & Calendario",
-                            color = GoldPrimary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium
+                            text = "Calendario mensual y movimiento diario",
+                            color = TextGray,
+                            fontSize = 11.sp
                         )
                     }
                 },
@@ -159,39 +99,35 @@ fun HistoryScreen(
                     }
                 },
                 actions = {
-                    // Role switcher badge
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (currentRole == PosRole.OWNER) GoldPrimary.copy(alpha = 0.2f) else DarkSurfaceElevated,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, if (currentRole == PosRole.OWNER) GoldPrimary else DarkBorder),
-                        modifier = Modifier
-                            .clickable {
-                                if (currentRole == PosRole.CASHIER) {
-                                    pinInput = ""
-                                    pinError = false
-                                    showPinDialog = true
-                                } else {
-                                    currentRole = PosRole.CASHIER
-                                }
+                    if (selectedDayKey != todayKey || displayedYear != todayKey.year || displayedMonth != todayKey.month) {
+                        TextButton(
+                            onClick = {
+                                displayedYear = todayKey.year
+                                displayedMonth = todayKey.month
+                                selectedDayKey = todayKey
                             }
-                            .padding(end = 8.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
                             Icon(
-                                imageVector = if (currentRole == PosRole.OWNER) Icons.Default.Shield else Icons.Default.Lock,
-                                contentDescription = null,
-                                tint = if (currentRole == PosRole.OWNER) GoldPrimary else TextGray,
-                                modifier = Modifier.size(13.dp)
+                                imageVector = Icons.Default.Today,
+                                contentDescription = "Ir a hoy",
+                                tint = GoldPrimary,
+                                modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = if (currentRole == PosRole.OWNER) "Patrón" else "Cajera",
-                                color = if (currentRole == PosRole.OWNER) GoldPrimary else TextWhite,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
+                                text = "Hoy",
+                                color = GoldPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                    if (payments.isNotEmpty()) {
+                        IconButton(onClick = { showConfirmDelete = true }) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Borrar historial",
+                                tint = DangerRed
                             )
                         }
                     }
@@ -203,1534 +139,901 @@ fun HistoryScreen(
         },
         containerColor = DarkBackground
     ) { paddingValues ->
-        LazyColumn(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(horizontal = 12.dp)
         ) {
-            // =================================================================
-            // 1. CALENDAR NAVIGATION HEADER
-            // =================================================================
-            item {
-                Spacer(modifier = Modifier.height(6.dp))
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = DarkSurfaceElevated),
-                    shape = RoundedCornerShape(14.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.CalendarMonth, contentDescription = null, tint = GoldPrimary, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "${MONTH_NAMES[currentMonth - 1]} $currentYear",
-                                    color = TextWhite,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                // Jump to today button
-                                TextButton(
-                                    onClick = {
-                                        val cal = Calendar.getInstance()
-                                        currentYear = cal.get(Calendar.YEAR)
-                                        currentMonth = cal.get(Calendar.MONTH) + 1
-                                        selectedDateStr = String.format(
-                                            Locale.US,
-                                            "%04d-%02d-%02d",
-                                            currentYear,
-                                            currentMonth,
-                                            cal.get(Calendar.DAY_OF_MONTH)
-                                        )
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                                ) {
-                                    Text("Hoy", color = GoldPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                }
-
-                                IconButton(
-                                    onClick = {
-                                        if (currentMonth == 1) {
-                                            currentMonth = 12
-                                            currentYear -= 1
-                                        } else {
-                                            currentMonth -= 1
-                                        }
-                                    },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(Icons.Default.ChevronLeft, contentDescription = "Mes anterior", tint = TextWhite)
-                                }
-
-                                IconButton(
-                                    onClick = {
-                                        if (currentMonth == 12) {
-                                            currentMonth = 1
-                                            currentYear += 1
-                                        } else {
-                                            currentMonth += 1
-                                        }
-                                    },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(Icons.Default.ChevronRight, contentDescription = "Mes siguiente", tint = TextWhite)
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Weekdays header
-                        Row(modifier = Modifier.fillMaxWidth()) {
-                            WEEKDAY_NAMES.forEach { dayName ->
-                                Text(
-                                    text = dayName,
-                                    color = TextGray,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        // Calendar Grid Days
-                        // Calculate offset for the first day of the month
-                        val firstDayCal = remember(currentYear, currentMonth) {
-                            val c = Calendar.getInstance()
-                            c.set(currentYear, currentMonth - 1, 1)
-                            c
-                        }
-                        // Calendar.DAY_OF_WEEK: Sunday=1, Monday=2 ... Saturday=7
-                        // We want Monday=0, Tuesday=1 ... Sunday=6
-                        val firstDayOfWeek = (firstDayCal.get(Calendar.DAY_OF_WEEK) + 5) % 7
-
-                        val totalCells = firstDayOfWeek + monthDays.size
-                        val rows = (totalCells + 6) / 7
-
-                        for (r in 0 until rows) {
-                            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                                for (c in 0..6) {
-                                    val cellIndex = r * 7 + c
-                                    val dayIndex = cellIndex - firstDayOfWeek
-                                    if (dayIndex in monthDays.indices) {
-                                        val indicator = monthDays[dayIndex]
-                                        val isSelected = indicator.dateStr == selectedDateStr
-                                        val isToday = indicator.dateStr == String.format(
-                                            Locale.US,
-                                            "%04d-%02d-%02d",
-                                            todayCalendar.get(Calendar.YEAR),
-                                            todayCalendar.get(Calendar.MONTH) + 1,
-                                            todayCalendar.get(Calendar.DAY_OF_MONTH)
-                                        )
-
-                                        Box(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .aspectRatio(1f)
-                                                .padding(2.dp)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(
-                                                    when {
-                                                        isSelected -> GoldPrimary.copy(alpha = 0.25f)
-                                                        isToday -> Color(0xFF1E293B)
-                                                        else -> Color.Transparent
-                                                    }
-                                                )
-                                                .border(
-                                                    1.dp,
-                                                    when {
-                                                        isSelected -> GoldPrimary
-                                                        isToday -> GoldPrimary.copy(alpha = 0.4f)
-                                                        else -> Color.Transparent
-                                                    },
-                                                    RoundedCornerShape(8.dp)
-                                                )
-                                                .clickable {
-                                                    selectedDateStr = indicator.dateStr
-                                                },
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Column(
-                                                horizontalAlignment = Alignment.CenterHorizontally,
-                                                verticalArrangement = Arrangement.Center
-                                            ) {
-                                                Text(
-                                                    text = indicator.dayNumber.toString(),
-                                                    color = if (isSelected) GoldPrimary else if (isToday) TextWhite else TextGray,
-                                                    fontSize = 12.sp,
-                                                    fontWeight = if (isSelected || isToday) FontWeight.Bold else FontWeight.Normal
-                                                )
-
-                                                // Activity dots (Green = Income, Red/Orange = Expenses)
-                                                Row(
-                                                    horizontalArrangement = Arrangement.Center,
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    modifier = Modifier.padding(top = 1.dp)
-                                                ) {
-                                                    if (indicator.hasSalesOrPayments) {
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .size(4.dp)
-                                                                .clip(CircleShape)
-                                                                .background(SuccessGreen)
-                                                        )
-                                                    }
-                                                    if (indicator.hasExpenses) {
-                                                        Spacer(modifier = Modifier.width(2.dp))
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .size(4.dp)
-                                                                .clip(CircleShape)
-                                                                .background(Color(0xFFF97316))
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        Spacer(modifier = Modifier.weight(1f).aspectRatio(1f))
-                                    }
-                                }
-                            }
-                        }
-
-                        // Legend
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(SuccessGreen))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Ingresos / Ventas", color = TextGray, fontSize = 9.sp)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(Color(0xFFF97316)))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Gastos", color = TextGray, fontSize = 9.sp)
-                        }
-                    }
+            when {
+                isLoading -> {
+                    HistoryScreenSkeleton()
                 }
-            }
-
-            // =================================================================
-            // 2. DAILY FINANCIAL SUMMARY BANNER & FORMULA BALANCES
-            // =================================================================
-            item {
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = formattedSelectedDateTitle,
-                    color = TextWhite,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                )
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                // 3 Balance Cards
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Card 1: Total Recibido (Nequi + Efectivo)
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = DarkSurfaceElevated),
-                        shape = RoundedCornerShape(12.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.4f)),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            Text("Total Recibido", color = TextGray, fontSize = 10.sp)
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = formatCOP(dailySummary.totalReceived),
-                                color = SuccessGreen,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Black
-                            )
-                            Text(
-                                text = "Nequi + Efectivo",
-                                color = TextMuted,
-                                fontSize = 8.sp
-                            )
-                        }
-                    }
-
-                    // Card 2: Total Gastos
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = DarkSurfaceElevated),
-                        shape = RoundedCornerShape(12.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF97316).copy(alpha = 0.4f)),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            Text("Total Gastos", color = TextGray, fontSize = 10.sp)
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = formatCOP(dailySummary.totalExpenses),
-                                color = Color(0xFFF97316),
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Black
-                            )
-                            Text(
-                                text = "${dailySummary.expensesCount} registros",
-                                color = TextMuted,
-                                fontSize = 8.sp
-                            )
-                        }
-                    }
-
-                    // Card 3: Balance de Movimientos
-                    val isPositiveBalance = dailySummary.movementBalance >= 0L
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = DarkSurfaceElevated),
-                        shape = RoundedCornerShape(12.dp),
-                        border = androidx.compose.foundation.BorderStroke(
-                            1.dp,
-                            if (isPositiveBalance) GoldPrimary.copy(alpha = 0.5f) else DangerRed.copy(alpha = 0.5f)
-                        ),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            Text("Balance Neto", color = TextGray, fontSize = 10.sp)
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = formatCOP(dailySummary.movementBalance),
-                                color = if (isPositiveBalance) GoldPrimary else DangerRed,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Black
-                            )
-                            Text(
-                                text = "Recibido - Gastos",
-                                color = TextMuted,
-                                fontSize = 8.sp
-                            )
-                        }
-                    }
-                }
-            }
-
-            // =================================================================
-            // 3. TABS: NEQUI / EFECTIVO / GASTOS / LO QUE SE VENDIÓ
-            // =================================================================
-            item {
-                Spacer(modifier = Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    // Tab 0: Nequi
-                    TabPill(
-                        text = "Nequi (${dailySummary.nequiCount})",
-                        isSelected = selectedTab == 0,
-                        onClick = { selectedTab = 0 },
-                        modifier = Modifier.weight(1f)
-                    )
-                    // Tab 1: Efectivo
-                    TabPill(
-                        text = "Efectivo (${dailySummary.cashCount})",
-                        isSelected = selectedTab == 1,
-                        onClick = { selectedTab = 1 },
-                        modifier = Modifier.weight(1f)
-                    )
-                    // Tab 2: Gastos
-                    TabPill(
-                        text = "Gastos (${dailySummary.expensesCount})",
-                        isSelected = selectedTab == 2,
-                        onClick = { selectedTab = 2 },
-                        modifier = Modifier.weight(1f)
-                    )
-                    // Tab 3: Productos
-                    TabPill(
-                        text = "Vendido (${dailySummary.productsSold.size})",
-                        isSelected = selectedTab == 3,
-                        onClick = { selectedTab = 3 },
-                        modifier = Modifier.weight(1f)
+                errorMessage != null -> {
+                    HistoryErrorState(
+                        errorMessage = errorMessage,
+                        onRetryClick = onRetryLoad
                     )
                 }
-                Spacer(modifier = Modifier.height(10.dp))
-            }
-
-            // =================================================================
-            // BLOCK 1: NEQUI TRANSACTIONS
-            // =================================================================
-            if (selectedTab == 0) {
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp),
+                        contentPadding = PaddingValues(vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Column {
-                            Text("Pagos por Nequi", color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Text(
-                                "Total acumulado: ${formatCOP(dailySummary.totalNequi)}",
-                                color = SuccessGreen,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = SuccessGreen.copy(alpha = 0.15f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.3f))
-                        ) {
-                            Text(
-                                text = "${dailySummary.nequiCount} transacciones",
-                                color = SuccessGreen,
-                                fontSize = 10.sp,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-
-                if (dailySummary.nequiTransactions.isEmpty()) {
-                    item {
-                        EmptyStateCard(
-                            icon = Icons.Default.QrCode,
-                            title = "No hay pagos Nequi este día",
-                            subtitle = "Las transferencias recibidas por Nequi o Bre-B aparecerán aquí automáticamente."
-                        )
-                    }
-                } else {
-                    items(dailySummary.nequiTransactions, key = { it.id }) { txn ->
-                        NequiTransactionCard(
-                            transaction = txn,
-                            onClick = { inspectingNequiTx = txn }
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                    }
-                }
-            }
-
-            // =================================================================
-            // BLOCK 2: EFECTIVO TRANSACTIONS
-            // =================================================================
-            if (selectedTab == 1) {
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Movimientos de Efectivo", color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Text(
-                                "Total acumulado: ${formatCOP(dailySummary.totalCash)}",
-                                color = SuccessGreen,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = GoldPrimary.copy(alpha = 0.15f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, GoldPrimary.copy(alpha = 0.3f))
-                        ) {
-                            Text(
-                                text = "${dailySummary.cashCount} movimientos",
-                                color = GoldPrimary,
-                                fontSize = 10.sp,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-
-                if (dailySummary.cashTransactions.isEmpty()) {
-                    item {
-                        EmptyStateCard(
-                            icon = Icons.Default.AttachMoney,
-                            title = "Sin cobros en efectivo este día",
-                            subtitle = "Las ventas en efectivo o ingresos de caja registrados se detallan aquí."
-                        )
-                    }
-                } else {
-                    items(dailySummary.cashTransactions, key = { it.id }) { txn ->
-                        CashTransactionCard(transaction = txn)
-                        Spacer(modifier = Modifier.height(6.dp))
-                    }
-                }
-            }
-
-            // =================================================================
-            // BLOCK 3: GASTOS (EXPENSES)
-            // =================================================================
-            if (selectedTab == 2) {
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Gastos y Salidas de Caja", color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Text(
-                                "Total gastos: ${formatCOP(dailySummary.totalExpenses)}",
-                                color = Color(0xFFF97316),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
+                        // 1. ACUMULADO DIARIO DESTACADO (PARTE SUPERIOR)
+                        item(key = "daily_accumulated_header") {
+                            DailyAccumulatedCard(
+                                dailySummary = dailySummary,
+                                isToday = selectedDayKey == todayKey
                             )
                         }
 
-                        Button(
-                            onClick = { showExpenseDialog = true },
-                            colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, tint = DarkBackground, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Registrar Gasto", color = DarkBackground, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-
-                if (dailySummary.expenses.isEmpty()) {
-                    item {
-                        EmptyStateCard(
-                            icon = Icons.Default.ReceiptLong,
-                            title = "Sin gastos registrados este día",
-                            subtitle = "Toca 'Registrar Gasto' para asentar insumos, servicios, transporte o reposición."
-                        )
-                    }
-                } else {
-                    items(dailySummary.expenses, key = { it.id }) { exp ->
-                        ExpenseCard(
-                            expense = exp,
-                            canAnnul = currentRole == PosRole.OWNER,
-                            onAnnulClick = { expenseToAnnul = exp }
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                    }
-                }
-            }
-
-            // =================================================================
-            // BLOCK 4: PRODUCTOS VENDIDOS ESE DÍA (LO QUE SE VENDIÓ)
-            // =================================================================
-            if (selectedTab == 3) {
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Lo que se vendió este día", color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            Text(
-                                "${dailySummary.totalUnitsSold} unidades en ${dailySummary.salesCount} ventas",
-                                color = GoldPrimary,
-                                fontSize = 11.sp
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-
-                if (dailySummary.productsSold.isEmpty()) {
-                    item {
-                        EmptyStateCard(
-                            icon = Icons.Default.ShoppingBag,
-                            title = "No hay ventas registradas este día",
-                            subtitle = "Los productos completados en ventas POS se agruparán aquí automáticamente."
-                        )
-                    }
-                } else {
-                    items(dailySummary.productsSold, key = { it.productId }) { prodSummary ->
-                        ProductSoldRowCard(
-                            summary = prodSummary,
-                            onClick = { inspectingProductOccurrences = prodSummary }
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                    }
-                }
-            }
-
-            item {
-                Spacer(modifier = Modifier.height(30.dp))
-            }
-        }
-    }
-
-    // =========================================================================
-    // DIALOG: DETAIL OF NEQUI TRANSACTION
-    // =========================================================================
-    inspectingNequiTx?.let { txn ->
-        Dialog(onDismissRequest = { inspectingNequiTx = null }) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = DarkSurfaceElevated,
-                border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
-                modifier = Modifier.fillMaxWidth().padding(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.QrCode, contentDescription = null, tint = SuccessGreen)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Detalle Transacción Nequi", color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                        }
-                        IconButton(onClick = { inspectingNequiTx = null }) {
-                            Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = TextGray)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Text(
-                        text = formatCOP(txn.amount),
-                        color = SuccessGreen,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Black
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    AuditDetailRow("Remitente / Pagador:", txn.payerNameOrPhone ?: "Cliente no especificado")
-                    AuditDetailRow("Hora:", txn.time)
-                    AuditDetailRow("Fecha:", txn.dateStr)
-
-                    // Critical prompt requirement: Bank reference separation vs "No disponible en el SMS"
-                    AuditDetailRow(
-                        "Referencia Bancaria:",
-                        txn.displayBankRef,
-                        isWarning = txn.bankTransactionRef.isNullOrBlank()
-                    )
-
-                    AuditDetailRow("ID Evento SMS Interno:", txn.smsEventId ?: "N/A")
-                    AuditDetailRow("Venta POS Asociada:", txn.saleNumber ?: txn.saleId ?: "Sin venta vinculada")
-                    AuditDetailRow("Estado:", txn.status)
-                    AuditDetailRow("Instalación de Origen:", txn.originInstallation)
-                    AuditDetailRow("Canal / Red:", txn.nequiChannel ?: "Transferencia Directa")
-                    AuditDetailRow("Cajera Responsable:", txn.cashierName)
-
-                    // Section 14: Manual Assignment from History ("Este local" / "El otro local")
-                    if (txn.status == "UNASSIGNED" || txn.status == "REQUIRES_REVIEW" || txn.status == "RECONCILIATION_PENDING") {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "Asignación Manual de Local:",
-                            color = GoldPrimary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    repository.assignNotificationToLocalStore(txn.smsEventId ?: txn.id, activeCashier.name)
-                                    inspectingNequiTx = null
+                        // 2. CALENDARIO MENSUAL INTERACTIVO
+                        item(key = "monthly_calendar_card") {
+                            MonthlyCalendarCard(
+                                monthlySummary = monthlySummary,
+                                todayKey = todayKey,
+                                selectedDayKey = selectedDayKey,
+                                onPreviousMonth = {
+                                    val (prevY, prevM) = PaymentHistoryCalculator.previousMonth(displayedYear, displayedMonth)
+                                    displayedYear = prevY
+                                    displayedMonth = prevM
+                                    val prevSummary = PaymentHistoryCalculator.calculateMonthlySummary(payments, prevY, prevM)
+                                    val targetDay = selectedDayKey.dayOfMonth.coerceAtMost(prevSummary.daysInMonth)
+                                    selectedDayKey = DayKey(prevY, prevM, targetDay)
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Este local", color = DarkBackground, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                            }
-                            Button(
-                                onClick = {
-                                    repository.assignNotificationToPeerStore(txn.smsEventId ?: txn.id, activeCashier.name)
-                                    inspectingNequiTx = null
+                                onNextMonth = {
+                                    val (nextY, nextM) = PaymentHistoryCalculator.nextMonth(displayedYear, displayedMonth)
+                                    displayedYear = nextY
+                                    displayedMonth = nextM
+                                    val nextSummary = PaymentHistoryCalculator.calculateMonthlySummary(payments, nextY, nextM)
+                                    val targetDay = selectedDayKey.dayOfMonth.coerceAtMost(nextSummary.daysInMonth)
+                                    selectedDayKey = DayKey(nextY, nextM, targetDay)
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary),
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("El otro local", color = DarkBackground, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(
-                        onClick = { inspectingNequiTx = null },
-                        colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Cerrar Auditoría", color = DarkBackground, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
-    }
-
-    // =========================================================================
-    // DIALOG: OCCURRENCES OF PRODUCT SOLD
-    // =========================================================================
-    inspectingProductOccurrences?.let { prod ->
-        Dialog(onDismissRequest = { inspectingProductOccurrences = null }) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = DarkSurfaceElevated,
-                border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
-                modifier = Modifier.fillMaxWidth().padding(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(prod.productName, color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text(
-                                "Total vendido: ${prod.totalQuantity} unidades (${formatCOP(prod.totalRevenue)})",
-                                color = GoldPrimary,
-                                fontSize = 11.sp
-                            )
-                        }
-                        IconButton(onClick = { inspectingProductOccurrences = null }) {
-                            Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = TextGray)
-                        }
-                    }
-
-                    if (prod.isCombo) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = GoldPrimary.copy(alpha = 0.15f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, GoldPrimary.copy(alpha = 0.3f))
-                        ) {
-                            Text(
-                                "Producto Combo: Registrado al precio pactado sin inflar componentes individuales",
-                                color = GoldPrimary,
-                                fontSize = 10.sp,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text("Ventas donde apareció:", color = TextGray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
-                        items(prod.salesDetails) { occ ->
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = DarkBackground,
-                                border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(8.dp).fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column {
-                                        Text(occ.saleNumber, color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                        Text("${occ.time} • Cajera: ${occ.cashierName}", color = TextGray, fontSize = 10.sp)
-                                    }
-                                    Column(horizontalAlignment = Alignment.End) {
-                                        Text("${occ.quantity} un. x ${formatCOP(occ.unitPrice)}", color = GoldPrimary, fontSize = 11.sp)
-                                        Text(formatCOP(occ.totalPrice), color = SuccessGreen, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                    }
+                                onSelectDay = { dayOfMonth ->
+                                    selectedDayKey = DayKey(displayedYear, displayedMonth, dayOfMonth)
                                 }
-                            }
+                            )
                         }
-                    }
 
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Button(
-                        onClick = { inspectingProductOccurrences = null },
-                        colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Aceptar", color = DarkBackground, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
-    }
+                        // 3. GRÁFICO DE BARRAS: MOVIMIENTO DIARIO Y RESUMEN DEL MES
+                        item(key = "daily_movement_chart_card") {
+                            DailyMovementBarChartCard(
+                                monthlySummary = monthlySummary,
+                                dailySummary = dailySummary,
+                                selectedDayKey = selectedDayKey,
+                                onSelectDayFromBar = { dayKey ->
+                                    displayedYear = dayKey.year
+                                    displayedMonth = dayKey.month
+                                    selectedDayKey = dayKey
+                                }
+                            )
+                        }
 
-    // =========================================================================
-    // DIALOG: CREATE NEW EXPENSE
-    // =========================================================================
-    if (showExpenseDialog) {
-        var expenseAmountInput by remember { mutableStateOf("") }
-        var expenseCategory by remember { mutableStateOf(EXPENSE_CATEGORIES.first()) }
-        var expenseDescInput by remember { mutableStateOf("") }
-        var expenseSource by remember { mutableStateOf("Caja efectivo") }
-        var expenseNotesInput by remember { mutableStateOf("") }
-        var expenseLinkedInventory by remember { mutableStateOf(false) }
-        var expenseErrorMessage by remember { mutableStateOf<String?>(null) }
-
-        Dialog(onDismissRequest = { showExpenseDialog = false }) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = DarkSurfaceElevated,
-                border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
-                modifier = Modifier.fillMaxWidth().padding(10.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .padding(16.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Text("Registrar Nuevo Gasto", color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Text("Fecha seleccionada: $selectedDateStr", color = GoldPrimary, fontSize = 11.sp)
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Amount COP
-                    OutlinedTextField(
-                        value = expenseAmountInput,
-                        onValueChange = { expenseAmountInput = it.filter { ch -> ch.isDigit() } },
-                        label = { Text("Monto en COP *") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = GoldPrimary,
-                            unfocusedBorderColor = DarkBorder,
-                            focusedTextColor = TextWhite,
-                            unfocusedTextColor = TextWhite
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Category chips
-                    Text("Categoría:", color = TextGray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        EXPENSE_CATEGORIES.chunked(3).forEach { rowCats ->
+                        // 4. ENCABEZADO DEL DETALLE DE PAGOS DEL DÍA SELECCIONADO
+                        item(key = "day_payments_section_title") {
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                rowCats.forEach { cat ->
-                                    val isCatSelected = expenseCategory == cat
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = if (isCatSelected) GoldPrimary.copy(alpha = 0.2f) else DarkBackground,
-                                        border = androidx.compose.foundation.BorderStroke(
-                                            1.dp,
-                                            if (isCatSelected) GoldPrimary else DarkBorder
-                                        ),
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clickable { expenseCategory = cat }
-                                    ) {
-                                        Text(
-                                            text = cat,
-                                            color = if (isCatSelected) GoldPrimary else TextGray,
-                                            fontSize = 9.sp,
-                                            fontWeight = if (isCatSelected) FontWeight.Bold else FontWeight.Normal,
-                                            textAlign = TextAlign.Center,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Description
-                    OutlinedTextField(
-                        value = expenseDescInput,
-                        onValueChange = { expenseDescInput = it },
-                        label = { Text("Descripción clara *") },
-                        placeholder = { Text("Ej: 6 Litros de leche entera") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = GoldPrimary,
-                            unfocusedBorderColor = DarkBorder,
-                            focusedTextColor = TextWhite,
-                            unfocusedTextColor = TextWhite
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Payment source
-                    Text("Medio de pago:", color = TextGray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                        listOf("Caja efectivo", "Nequi", "Otro").forEach { src ->
-                            val isSrcSelected = expenseSource == src
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (isSrcSelected) SuccessGreen.copy(alpha = 0.2f) else DarkBackground,
-                                border = androidx.compose.foundation.BorderStroke(
-                                    1.dp,
-                                    if (isSrcSelected) SuccessGreen else DarkBorder
-                                ),
-                                modifier = Modifier.weight(1f).clickable { expenseSource = src }
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp, bottom = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = src,
-                                    color = if (isSrcSelected) SuccessGreen else TextGray,
-                                    fontSize = 10.sp,
-                                    fontWeight = if (isSrcSelected) FontWeight.Bold else FontWeight.Normal,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(vertical = 6.dp)
+                                    text = "Pagos del ${dailySummary.formattedShortDate}",
+                                    color = TextWhite,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 16.sp
+                                )
+                                Text(
+                                    text = if (dailySummary.paymentCount == 1) "1 confirmado" else "${dailySummary.paymentCount} confirmados",
+                                    color = if (dailySummary.paymentCount > 0) SuccessGreenLight else TextMuted,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 12.sp
                                 )
                             }
                         }
-                    }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Notes
-                    OutlinedTextField(
-                        value = expenseNotesInput,
-                        onValueChange = { expenseNotesInput = it },
-                        label = { Text("Observaciones / Factura (opcional)") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = GoldPrimary,
-                            unfocusedBorderColor = DarkBorder,
-                            focusedTextColor = TextWhite,
-                            unfocusedTextColor = TextWhite
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    // Anti double count info
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Checkbox(
-                            checked = expenseLinkedInventory,
-                            onCheckedChange = { expenseLinkedInventory = it },
-                            colors = CheckboxDefaults.colors(checkedColor = GoldPrimary)
-                        )
-                        Text(
-                            text = "Compra de inventario / insumos (evitar duplicar)",
-                            color = TextGray,
-                            fontSize = 10.sp
-                        )
-                    }
-
-                    expenseErrorMessage?.let { err ->
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(err, color = DangerRed, fontSize = 11.sp)
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { showExpenseDialog = false },
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Cancelar", color = TextGray)
-                        }
-
-                        Button(
-                            onClick = {
-                                val amt = expenseAmountInput.toLongOrNull() ?: 0L
-                                if (amt <= 0L) {
-                                    expenseErrorMessage = "Ingresa un monto válido mayor a 0"
-                                    return@Button
-                                }
-                                if (expenseDescInput.isBlank()) {
-                                    expenseErrorMessage = "La descripción no puede estar vacía"
-                                    return@Button
-                                }
-                                val res = repository.recordExpense(
-                                    amount = amt,
-                                    category = expenseCategory,
-                                    description = expenseDescInput,
-                                    paymentSource = expenseSource,
-                                    cashierName = activeCashier.name,
-                                    notes = expenseNotesInput,
-                                    dateStr = selectedDateStr,
-                                    isLinkedToInventory = expenseLinkedInventory
+                        // 5. LISTADO CRONOLÓGICO DE PAGOS DEL DÍA O ESTADO VACÍO
+                        if (dailySummary.payments.isEmpty()) {
+                            item(key = "empty_day_state") {
+                                EmptySelectedDayCard(
+                                    formattedDateTitle = dailySummary.formattedDateTitle
                                 )
-                                if (res.isSuccess) {
-                                    showExpenseDialog = false
-                                } else {
-                                    expenseErrorMessage = res.exceptionOrNull()?.message ?: "Error al guardar"
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Guardar", color = DarkBackground, fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            items(
+                                items = dailySummary.payments,
+                                key = { it.id }
+                            ) { payment ->
+                                PaymentHistoryDetailItem(payment = payment)
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    // =========================================================================
-    // DIALOG: ANNUL EXPENSE
-    // =========================================================================
-    expenseToAnnul?.let { exp ->
-        Dialog(onDismissRequest = { expenseToAnnul = null }) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = DarkSurfaceElevated,
-                border = androidx.compose.foundation.BorderStroke(1.dp, DangerRed.copy(alpha = 0.5f)),
-                modifier = Modifier.fillMaxWidth().padding(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Anular Gasto", color = DangerRed, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
+        if (showConfirmDelete) {
+            AlertDialog(
+                onDismissRequest = { showConfirmDelete = false },
+                title = {
                     Text(
-                        "¿Estás seguro de anular el gasto de ${formatCOP(exp.amount)} (${exp.description})?",
+                        text = "¿Borrar todo el historial?",
                         color = TextWhite,
-                        fontSize = 12.sp
+                        fontWeight = FontWeight.Bold
                     )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = annulReasonInput,
-                        onValueChange = { annulReasonInput = it },
-                        label = { Text("Motivo de anulación *") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = DangerRed,
-                            unfocusedBorderColor = DarkBorder,
-                            focusedTextColor = TextWhite,
-                            unfocusedTextColor = TextWhite
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
+                },
+                text = {
+                    Text(
+                        text = "Esta acción eliminará permanentemente los pagos guardados en este dispositivo.",
+                        color = TextGray
                     )
-
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onClearHistory()
+                            showConfirmDelete = false
+                        }
                     ) {
-                        OutlinedButton(
-                            onClick = { expenseToAnnul = null },
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Cancelar", color = TextGray)
-                        }
-
-                        Button(
-                            onClick = {
-                                if (annulReasonInput.isNotBlank()) {
-                                    repository.annulExpense(exp.id, annulReasonInput, "Patrón")
-                                    annulReasonInput = ""
-                                    expenseToAnnul = null
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = DangerRed),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Confirmar Anulación", color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        }
+                        Text("Eliminar", color = DangerRed, fontWeight = FontWeight.Bold)
                     }
-                }
-            }
-        }
-    }
-
-    // =========================================================================
-    // DIALOG: PIN ACCESS FOR OWNER ROLE
-    // =========================================================================
-    if (showPinDialog) {
-        Dialog(onDismissRequest = { showPinDialog = false }) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = DarkSurfaceElevated,
-                border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
-                modifier = Modifier.fillMaxWidth().padding(16.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Ingresar PIN de Patrón", color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Text("Requerido para auditar meses anteriores y anular gastos", color = TextGray, fontSize = 11.sp)
-
-                    Spacer(modifier = Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value = pinInput,
-                        onValueChange = { pinInput = it.filter { ch -> ch.isDigit() } },
-                        label = { Text("PIN (4 dígitos)") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = GoldPrimary,
-                            unfocusedBorderColor = DarkBorder,
-                            focusedTextColor = TextWhite,
-                            unfocusedTextColor = TextWhite
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    if (pinError) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("PIN incorrecto (predeterminado: 1234)", color = DangerRed, fontSize = 11.sp)
+                },
+                dismissButton = {
+                    TextButton(onClick = { showConfirmDelete = false }) {
+                        Text("Cancelar", color = TextWhite)
                     }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { showPinDialog = false },
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Cancelar", color = TextGray)
-                        }
-
-                        Button(
-                            onClick = {
-                                if (pinInput == "1234" || pinInput.isNotEmpty()) {
-                                    currentRole = PosRole.OWNER
-                                    showPinDialog = false
-                                } else {
-                                    pinError = true
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Entrar", color = DarkBackground, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
+                },
+                containerColor = DarkSurface,
+                shape = RoundedCornerShape(20.dp)
+            )
         }
     }
 }
 
-// =============================================================================
-// SUB-COMPONENTS
-// =============================================================================
-
+/**
+ * Tarjeta superior obligatoria que destaca el Acumulado Diario del día seleccionado.
+ */
 @Composable
-private fun TabPill(
-    text: String,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
+private fun DailyAccumulatedCard(
+    dailySummary: DailySummary,
+    isToday: Boolean
 ) {
     Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = if (isSelected) GoldPrimary else DarkSurfaceElevated,
+        shape = RoundedCornerShape(20.dp),
+        color = DarkSurface,
         border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            if (isSelected) GoldPrimary else DarkBorder
+            width = 1.5.dp,
+            color = if (dailySummary.totalAmount > 0L) GoldPrimary.copy(alpha = 0.75f) else DarkBorder
         ),
-        modifier = modifier.clickable { onClick() }
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Text(
-            text = text,
-            color = if (isSelected) DarkBackground else TextGray,
-            fontSize = 10.sp,
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(vertical = 7.dp, horizontal = 4.dp)
-        )
-    }
-}
-
-@Composable
-private fun NequiTransactionCard(
-    transaction: PaymentTransaction,
-    onClick: () -> Unit
-) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = DarkSurfaceElevated),
-        shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-    ) {
-        Column(modifier = Modifier.padding(10.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp)
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.QrCode, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = transaction.payerNameOrPhone ?: "Cliente Nequi",
-                        color = TextWhite,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
-                    )
-                }
                 Text(
-                    text = formatCOP(transaction.amount),
-                    color = SuccessGreen,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 14.sp
+                    text = if (isToday) "Fecha seleccionada: Hoy (${dailySummary.formattedDateTitle})"
+                    else "Fecha seleccionada: ${dailySummary.formattedDateTitle}",
+                    color = GoldPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
                 )
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Bank ref vs "No disponible en el SMS"
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Ref: ", color = TextGray, fontSize = 10.sp)
-                    if (transaction.bankTransactionRef.isNullOrBlank()) {
-                        Text(
-                            text = "No disponible en el SMS",
-                            color = GoldPrimary,
-                            fontSize = 10.sp,
-                            fontStyle = FontStyle.Italic
-                        )
-                    } else {
-                        Text(
-                            text = transaction.bankTransactionRef,
-                            color = TextWhite,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
+            Text(
+                text = "TOTAL RECIBIDO HOY: ${dailySummary.formattedTotalAmount}",
+                color = if (dailySummary.totalAmount > 0L) SuccessGreenLight else TextWhite,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 0.3.sp
+            )
 
-                Text(
-                    text = transaction.time,
-                    color = TextGray,
-                    fontSize = 10.sp
-                )
-            }
+            Spacer(modifier = Modifier.height(12.dp))
 
-            Spacer(modifier = Modifier.height(2.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "SMS: ${transaction.smsEventId ?: "N/A"} • ${transaction.originInstallation}",
-                    color = TextMuted,
-                    fontSize = 9.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-
-                val isPendingAssignment = transaction.status == "UNASSIGNED" ||
-                    transaction.status == "REQUIRES_REVIEW" ||
-                    transaction.status == "RECONCILIATION_PENDING"
-                val badgeColor = if (isPendingAssignment) GoldPrimary else SuccessGreen
-
+            if (dailySummary.paymentCount == 0) {
                 Surface(
-                    shape = RoundedCornerShape(4.dp),
-                    color = badgeColor.copy(alpha = 0.15f)
+                    shape = RoundedCornerShape(12.dp),
+                    color = DarkBackground.copy(alpha = 0.65f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorderSubtle),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = if (transaction.status == "UNASSIGNED") "PENDIENTE ASIGNACIÓN" else transaction.status,
-                        color = badgeColor,
-                        fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CashTransactionCard(transaction: PaymentTransaction) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = DarkSurfaceElevated),
-        shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.AttachMoney, contentDescription = null, tint = GoldPrimary, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (transaction.entryType == "MANUAL_CASH_IN") "Ingreso manual a caja" else (transaction.saleNumber ?: "Venta POS"),
-                        color = TextWhite,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
-                    )
-                }
-                Text(
-                    text = formatCOP(transaction.amount),
-                    color = GoldPrimary,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 14.sp
-                )
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("Cajera: ${transaction.cashierName}", color = TextGray, fontSize = 10.sp)
-                Text(transaction.time, color = TextGray, fontSize = 10.sp)
-            }
-
-            if (transaction.notes.isNotBlank()) {
-                Spacer(modifier = Modifier.height(2.dp))
-                Text("Nota: ${transaction.notes}", color = TextMuted, fontSize = 9.sp)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ExpenseCard(
-    expense: ExpenseRecord,
-    canAnnul: Boolean,
-    onAnnulClick: () -> Unit
-) {
-    val isCancelled = expense.status == "CANCELLED"
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = if (isCancelled) DarkSurfaceElevated.copy(alpha = 0.5f) else DarkSurfaceElevated
-        ),
-        shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            if (isCancelled) DangerRed.copy(alpha = 0.3f) else Color(0xFFF97316).copy(alpha = 0.3f)
-        ),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = Color(0xFFF97316).copy(alpha = 0.2f)
-                    ) {
-                        Text(
-                            text = expense.category,
-                            color = Color(0xFFF97316),
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = expense.description,
-                        color = if (isCancelled) TextGray else TextWhite,
-                        fontWeight = FontWeight.Bold,
+                        text = "Sin pagos confirmados en esta fecha. Selecciona otro día con indicador en el calendario o espera una nueva transferencia.",
+                        color = TextGray,
                         fontSize = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(12.dp)
                     )
                 }
-
-                Text(
-                    text = "-${formatCOP(expense.amount)}",
-                    color = if (isCancelled) DangerRed.copy(alpha = 0.5f) else Color(0xFFF97316),
-                    fontWeight = FontWeight.Black,
-                    fontSize = 13.sp
-                )
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Medio: ${expense.paymentSource} • Responsable: ${expense.cashierName}",
-                    color = TextGray,
-                    fontSize = 10.sp
-                )
-                Text(expense.time, color = TextGray, fontSize = 10.sp)
-            }
-
-            if (expense.notes.isNotBlank()) {
-                Spacer(modifier = Modifier.height(2.dp))
-                Text("Nota: ${expense.notes}", color = TextMuted, fontSize = 9.sp)
-            }
-
-            if (canAnnul && !isCancelled) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(
-                        onClick = onAnnulClick,
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = DarkSurfaceElevated,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Text("Anular gasto", color = DangerRed, fontSize = 10.sp)
-                    }
-                }
-            } else if (isCancelled) {
-                Spacer(modifier = Modifier.height(2.dp))
-                Text("ANULADO", color = DangerRed, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProductSoldRowCard(
-    summary: ProductSaleSummary,
-    onClick: () -> Unit
-) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = DarkSurfaceElevated),
-        shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-    ) {
-        Row(
-            modifier = Modifier.padding(10.dp).fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = summary.productName,
-                        color = TextWhite,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
-                    )
-                    if (summary.isCombo) {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = GoldPrimary.copy(alpha = 0.2f)
-                        ) {
+                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                             Text(
-                                "COMBO",
-                                color = GoldPrimary,
-                                fontSize = 8.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                text = "Pagos confirmados",
+                                color = TextGray,
+                                fontSize = 11.sp
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "${dailySummary.paymentCount}",
+                                color = TextWhite,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 16.sp
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = DarkSurfaceElevated,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                            Text(
+                                text = "Promedio por pago",
+                                color = TextGray,
+                                fontSize = 11.sp
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = dailySummary.formattedAverageAmount,
+                                color = GoldLight,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 16.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
                 }
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "${summary.totalQuantity} unidades vendidas en ${summary.salesCount} ventas • Unitario: ${formatCOP(summary.unitSalePrice)}",
-                    color = TextGray,
-                    fontSize = 10.sp
-                )
-            }
-
-            Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    text = formatCOP(summary.totalRevenue),
-                    color = SuccessGreen,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 13.sp
-                )
-                Text(
-                    text = "Ver ventas >",
-                    color = GoldPrimary,
-                    fontSize = 9.sp
-                )
             }
         }
     }
 }
 
+/**
+ * Calendario mensual convencional con navegación entre meses, día actual resaltado,
+ * e indicadores discretos para días con pagos registrados.
+ */
 @Composable
-private fun AuditDetailRow(
-    label: String,
-    value: String,
-    isWarning: Boolean = false
+private fun MonthlyCalendarCard(
+    monthlySummary: MonthlySummary,
+    todayKey: DayKey,
+    selectedDayKey: DayKey,
+    onPreviousMonth: () -> Unit,
+    onNextMonth: () -> Unit,
+    onSelectDay: (Int) -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(label, color = TextGray, fontSize = 11.sp, modifier = Modifier.weight(0.45f))
-        Text(
-            text = value,
-            color = if (isWarning) GoldPrimary else TextWhite,
-            fontSize = 11.sp,
-            fontWeight = if (isWarning) FontWeight.SemiBold else FontWeight.Normal,
-            fontStyle = if (isWarning) FontStyle.Italic else FontStyle.Normal,
-            textAlign = TextAlign.End,
-            modifier = Modifier.weight(0.55f)
-        )
-    }
-}
-
-@Composable
-private fun EmptyStateCard(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    subtitle: String
-) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = DarkSurfaceElevated.copy(alpha = 0.6f)),
-        shape = RoundedCornerShape(12.dp),
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = DarkSurface,
         border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(24.dp).fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            // Barra de navegación de mes y año
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onPreviousMonth,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(DarkSurfaceElevated)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                        contentDescription = "Mes anterior",
+                        tint = TextWhite
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.CalendarMonth,
+                        contentDescription = null,
+                        tint = GoldPrimary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = monthlySummary.monthTitle,
+                        color = TextWhite,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 16.sp
+                    )
+                }
+
+                IconButton(
+                    onClick = onNextMonth,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(DarkSurfaceElevated)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = "Mes siguiente",
+                        tint = TextWhite
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Cabecera de días de la semana (Lun a Dom)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                WEEKDAY_HEADERS.forEach { dayLabel ->
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = dayLabel,
+                            color = TextMuted,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Filas de semanas del calendario
+            val weeks = monthlySummary.calendarGridCells.chunked(7)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                weeks.forEach { week ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        week.forEach { dayNumber ->
+                            if (dayNumber == null) {
+                                Spacer(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .aspectRatio(1f)
+                                )
+                            } else {
+                                val cellKey = DayKey(monthlySummary.year, monthlySummary.month, dayNumber)
+                                val isSelected = cellKey == selectedDayKey
+                                val isToday = cellKey == todayKey
+                                val hasPayments = monthlySummary.daysWithPayments.contains(dayNumber)
+
+                                val bgColor = when {
+                                    isSelected -> GoldPrimary
+                                    hasPayments -> DarkSurfaceElevated
+                                    else -> DarkBackground.copy(alpha = 0.45f)
+                                }
+
+                                val borderColor = when {
+                                    isSelected -> GoldPrimary
+                                    isToday -> GoldPrimary.copy(alpha = 0.85f)
+                                    hasPayments -> SuccessGreen.copy(alpha = 0.45f)
+                                    else -> DarkBorderSubtle
+                                }
+
+                                val textColor = when {
+                                    isSelected -> DarkBackground
+                                    hasPayments -> TextWhite
+                                    isToday -> GoldLight
+                                    else -> TextMuted
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .aspectRatio(1f)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(bgColor)
+                                        .border(
+                                            width = if (isToday || isSelected) 1.5.dp else 1.dp,
+                                            color = borderColor,
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                        .clickable { onSelectDay(dayNumber) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
+                                        Text(
+                                            text = dayNumber.toString(),
+                                            color = textColor,
+                                            fontWeight = if (isSelected || hasPayments || isToday) FontWeight.ExtraBold else FontWeight.Medium,
+                                            fontSize = 13.sp
+                                        )
+                                        Spacer(modifier = Modifier.height(3.dp))
+                                        // Indicador discreto en los días con pagos
+                                        Box(
+                                            modifier = Modifier
+                                                .size(5.dp)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    when {
+                                                        isSelected && hasPayments -> DarkBackground
+                                                        hasPayments -> SuccessGreenLight
+                                                        else -> Color.Transparent
+                                                    }
+                                                )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Leyenda discreta del calendario
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(SuccessGreenLight)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = "Día con pagos", color = TextGray, fontSize = 11.sp)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(GoldPrimary)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = "Día seleccionado", color = TextGray, fontSize = 11.sp)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Gráfico de barras oscuro y compacto del movimiento diario del mes + 3 indicadores de resumen mensual.
+ */
+@Composable
+private fun DailyMovementBarChartCard(
+    monthlySummary: MonthlySummary,
+    dailySummary: DailySummary,
+    selectedDayKey: DayKey,
+    onSelectDayFromBar: (DayKey) -> Unit
+) {
+    val barScrollState = rememberScrollState()
+
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = DarkSurface,
+        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            // Cabecera del gráfico y valor legible del día seleccionado
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.BarChart,
+                        contentDescription = null,
+                        tint = GoldPrimary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Column {
+                        Text(
+                            text = "Movimiento Diario",
+                            color = TextWhite,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
+                        )
+                        Text(
+                            text = monthlySummary.monthTitle,
+                            color = TextGray,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "Día ${selectedDayKey.dayOfMonth}",
+                        color = GoldPrimary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = dailySummary.formattedTotalAmount,
+                        color = if (dailySummary.totalAmount > 0L) SuccessGreenLight else TextGray,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Área de barras con desplazamiento horizontal para evitar superposición en pantallas pequeñas
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(DarkBackground.copy(alpha = 0.7f))
+                    .border(1.dp, DarkBorderSubtle, RoundedCornerShape(14.dp))
+                    .padding(horizontal = 10.dp, vertical = 12.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(barScrollState),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    monthlySummary.dailyBars.forEach { barItem ->
+                        val isSelected = barItem.dayKey == selectedDayKey
+                        val hasIncome = barItem.totalAmount > 0L
+                        val maxBarHeight = 92.dp
+                        val computedHeight = if (hasIncome) {
+                            (maxBarHeight * barItem.heightFraction).coerceAtLeast(10.dp)
+                        } else {
+                            4.dp
+                        }
+
+                        val barColor = when {
+                            isSelected -> GoldPrimary
+                            hasIncome -> Color(0xFF64748B)
+                            else -> Color(0xFF1E293B)
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .width(26.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onSelectDayFromBar(barItem.dayKey) }
+                                .padding(vertical = 2.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Bottom
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .height(maxBarHeight)
+                                    .fillMaxWidth(),
+                                contentAlignment = Alignment.BottomCenter
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(if (isSelected) 16.dp else 13.dp)
+                                        .height(computedHeight)
+                                        .clip(
+                                            RoundedCornerShape(
+                                                topStart = 5.dp,
+                                                topEnd = 5.dp,
+                                                bottomStart = 2.dp,
+                                                bottomEnd = 2.dp
+                                            )
+                                        )
+                                        .background(barColor)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            Text(
+                                text = barItem.dayOfMonth.toString(),
+                                color = when {
+                                    isSelected -> GoldPrimary
+                                    hasIncome -> TextWhite
+                                    else -> TextMuted
+                                },
+                                fontSize = 10.sp,
+                                fontWeight = if (isSelected || hasIncome) FontWeight.Bold else FontWeight.Normal,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Resumen del mes (3 indicadores reales)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MonthMetricSmallBox(
+                    label = "Total del mes",
+                    value = monthlySummary.formattedTotalMonthAmount,
+                    valueColor = SuccessGreenLight,
+                    modifier = Modifier.weight(1f)
+                )
+                MonthMetricSmallBox(
+                    label = "Mayor ingreso",
+                    value = monthlySummary.formattedBestDayLabel,
+                    valueColor = GoldLight,
+                    modifier = Modifier.weight(1f)
+                )
+                MonthMetricSmallBox(
+                    label = "Pagos del mes",
+                    value = "${monthlySummary.totalMonthPaymentCount}",
+                    valueColor = TextWhite,
+                    modifier = Modifier.weight(0.8f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MonthMetricSmallBox(
+    label: String,
+    value: String,
+    valueColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = DarkSurfaceElevated,
+        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+        ) {
+            Text(
+                text = label,
+                color = TextGray,
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = value,
+                color = valueColor,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/**
+ * Estado vacío cuando el día seleccionado no registra pagos confirmados.
+ */
+@Composable
+private fun EmptySelectedDayCard(
+    formattedDateTitle: String
+) {
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = DarkSurface,
+        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorderSubtle),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Icon(icon, contentDescription = null, tint = TextMuted, modifier = Modifier.size(36.dp))
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(title, color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(subtitle, color = TextGray, fontSize = 10.sp, textAlign = TextAlign.Center)
+            Icon(
+                imageVector = Icons.Default.ReceiptLong,
+                contentDescription = "Sin pagos",
+                tint = TextMuted,
+                modifier = Modifier.size(44.dp)
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = "Sin movimientos registrados",
+                color = TextWhite,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "No se registraron pagos confirmados el $formattedDateTitle.",
+                color = TextGray,
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+/**
+ * Ítem individual del detalle cronológico del día seleccionado.
+ * Incluye:
+ * 1. Hora exacta de recepción con segundos (ej. 19:11:42)
+ * 2. Valor exacto recibido
+ * 3. Nombre completo del remitente (cuando esté disponible en la notificación)
+ * 4. Fecha del pago
+ * 5. Identificador interno del registro
+ */
+@Composable
+private fun PaymentHistoryDetailItem(payment: Payment) {
+    val senderLabel = payment.senderName?.takeIf { it.isNotBlank() } ?: payment.appName
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = DarkSurface,
+        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp)
+        ) {
+            // Línea principal: Hora exacta (HH:mm:ss) — $Monto — Nombre del remitente
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = payment.formattedExactTime,
+                        color = GoldLight,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = " — ",
+                        color = TextMuted,
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        text = payment.formattedAmount,
+                        color = SuccessGreenLight,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+
+                Text(
+                    text = payment.appName,
+                    color = GoldPrimary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Nombre completo del remitente destacado
+            Text(
+                text = if (!payment.senderName.isNullOrBlank()) {
+                    "Remitente: ${payment.senderName}"
+                } else {
+                    "Origen: ${payment.appName} (remitente no incluido en notificación)"
+                },
+                color = if (!payment.senderName.isNullOrBlank()) TextWhite else TextGray,
+                fontSize = 13.sp,
+                fontWeight = if (!payment.senderName.isNullOrBlank()) FontWeight.SemiBold else FontWeight.Normal
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Metadatos inferiores: Fecha exacta e identificador interno del registro
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Fecha: ${payment.formattedDate}" +
+                            if (!payment.hasExactSeconds) " · Hora histórica sin seg." else "",
+                    color = TextMuted,
+                    fontSize = 11.sp
+                )
+                Text(
+                    text = "ID: #${payment.displayInternalId}",
+                    color = TextMuted,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryErrorState(
+    errorMessage: String,
+    onRetryClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.ErrorOutline,
+            contentDescription = "Error",
+            tint = DangerRedLight,
+            modifier = Modifier.size(56.dp)
+        )
+        Spacer(modifier = Modifier.height(14.dp))
+        Text(
+            text = "Error al cargar el historial",
+            color = TextWhite,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = errorMessage,
+            color = TextGray,
+            fontSize = 13.sp,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(
+            onClick = onRetryClick,
+            colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary, contentColor = DarkBackground),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Reintentar", fontWeight = FontWeight.Bold)
         }
     }
 }

@@ -1,4 +1,3 @@
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -13,11 +12,10 @@ android {
         applicationId = "com.ambiorix.pay"
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 27
+        versionName = "2.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
         vectorDrawables {
             useSupportLibrary = true
         }
@@ -27,15 +25,12 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-
             signingConfig = signingConfigs.getByName("debug")
         }
-
         debug {
             applicationIdSuffix = ".debug"
             isDebuggable = true
@@ -64,18 +59,10 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
-
-    testOptions {
-        unitTests.all {
-            it.maxHeapSize = "256m"
-        }
-    }
 }
-
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
-
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
@@ -92,7 +79,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // Image loading
+    // Image loading for local merchant QRs (file storage, no internet)
     implementation("io.coil-kt:coil-compose:2.7.0")
 
     // Coroutines
@@ -102,10 +89,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
-    // Unit testing
+    // Unit Testing (Pure JVM tests for parser, filter, Spanish numbers)
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
-
-    // JSON para las pruebas locales
-    testImplementation("org.json:json:20240303")
 }

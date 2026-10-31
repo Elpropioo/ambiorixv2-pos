@@ -34,6 +34,8 @@ class SettingsActivity : ComponentActivity() {
             AmbiorixPayTheme {
                 val settings by settingsRepository.settingsFlow.collectAsStateWithLifecycle()
                 val payments by paymentRepository.paymentsFlow.collectAsStateWithLifecycle()
+                val isHistoryLoading by paymentRepository.isLoadingFlow.collectAsStateWithLifecycle()
+                val historyError by paymentRepository.errorFlow.collectAsStateWithLifecycle()
                 val isSpanishSupported by soundAnnouncer.isSpanishSupported.collectAsStateWithLifecycle()
                 val isTtsReady by soundAnnouncer.isTtsReady.collectAsStateWithLifecycle()
                 val ttsStatusDetail by soundAnnouncer.ttsStatusDetail.collectAsStateWithLifecycle()
@@ -57,6 +59,9 @@ class SettingsActivity : ComponentActivity() {
                 if (currentSubScreen == "history") {
                     HistoryScreen(
                         payments = payments,
+                        isLoading = isHistoryLoading,
+                        errorMessage = historyError,
+                        onRetryLoad = { paymentRepository.reloadFromStorage() },
                         onBackClick = { currentSubScreen = "settings" },
                         onClearHistory = { paymentRepository.clearHistory() }
                     )
@@ -68,12 +73,7 @@ class SettingsActivity : ComponentActivity() {
                         ttsStatusDetail = ttsStatusDetail,
                         isNotificationAccessGranted = isNotificationAccessGranted,
                         onSettingsChanged = { transform ->
-                            val prev = settingsRepository.getSettings()
                             settingsRepository.updateSettings(transform)
-                            val next = settingsRepository.getSettings()
-                            if ((!prev.peerStoreEnabled && next.peerStoreEnabled) || (!prev.smsPaymentEnabled && next.smsPaymentEnabled)) {
-                                ensureSmsPermissionsGranted()
-                            }
                         },
                         onBackClick = { finish() },
                         onOpenNotificationSettings = {
@@ -100,24 +100,6 @@ class SettingsActivity : ComponentActivity() {
                     )
                 }
             }
-        }
-    }
-
-    private fun ensureSmsPermissionsGranted() {
-        val requiredPermissions = arrayOf(
-            android.Manifest.permission.RECEIVE_SMS,
-            android.Manifest.permission.SEND_SMS
-        )
-        val missing = requiredPermissions.filter {
-            androidx.core.content.ContextCompat.checkSelfPermission(this, it) !=
-                android.content.pm.PackageManager.PERMISSION_GRANTED
-        }
-        if (missing.isNotEmpty()) {
-            androidx.core.app.ActivityCompat.requestPermissions(
-                this,
-                missing.toTypedArray(),
-                1002
-            )
         }
     }
 

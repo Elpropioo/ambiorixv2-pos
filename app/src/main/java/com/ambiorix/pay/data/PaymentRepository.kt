@@ -7,24 +7,57 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.abs
 
 class PaymentRepository(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    private val _isLoadingFlow = MutableStateFlow(true)
+    val isLoadingFlow: StateFlow<Boolean> = _isLoadingFlow.asStateFlow()
+
+    private val _errorFlow = MutableStateFlow<String?>(null)
+    val errorFlow: StateFlow<String?> = _errorFlow.asStateFlow()
+
     private val _paymentsFlow = MutableStateFlow<List<Payment>>(emptyList())
     val paymentsFlow: StateFlow<List<Payment>> = _paymentsFlow.asStateFlow()
 
     init {
-        _paymentsFlow.value = loadPayments()
+        reloadFromStorage()
+    }
+
+    @Synchronized
+    fun reloadFromStorage() {
+        _isLoadingFlow.value = true
+        _errorFlow.value = null
+        try {
+            _paymentsFlow.value = loadPayments()
+        } catch (e: Exception) {
+            _errorFlow.value = "No se pudo leer el historial local: ${e.localizedMessage ?: "Error de lectura"}"
+        } finally {
+            _isLoadingFlow.value = false
+        }
     }
 
     @Synchronized
     fun recordPayment(payment: Payment) {
         val current = _paymentsFlow.value.toMutableList()
+
+        // Evitar insertar dos veces el mismo pago o notificación duplicada inmediata
+        val isDuplicate = current.any { existing ->
+            (existing.id.isNotBlank() && existing.id == payment.id) ||
+                    (existing.packageName.equals(payment.packageName, ignoreCase = true) &&
+                            existing.amount == payment.amount &&
+                            existing.senderName.orEmpty().equals(payment.senderName.orEmpty(), ignoreCase = true) &&
+                            abs(existing.timestampMillis - payment.timestampMillis) <= 2000L)
+        }
+        if (isDuplicate) {
+            return
+        }
+
         current.add(0, payment)
-        // Guardar máximo los últimos 100 pagos para mantener bajo uso de memoria y disco
-        val trimmed = if (current.size > 100) current.take(100) else current
+        val sorted = current.sortedByDescending { it.timestampMillis }
+        val trimmed = if (sorted.size > MAX_HISTORY_SIZE) sorted.take(MAX_HISTORY_SIZE) else sorted
         _paymentsFlow.value = trimmed
         savePayments(trimmed)
     }
@@ -32,41 +65,66 @@ class PaymentRepository(context: Context) {
     @Synchronized
     fun clearHistory() {
         _paymentsFlow.value = emptyList()
+        _errorFlow.value = null
         prefs.edit().remove(KEY_PAYMENTS_JSON).apply()
     }
 
     private fun loadPayments(): List<Payment> {
         val jsonStr = prefs.getString(KEY_PAYMENTS_JSON, null) ?: return emptyList()
         val list = mutableListOf<Payment>()
-        try {
-            val array = JSONArray(jsonStr)
-            for (i in 0 until array.length()) {
-                val obj = array.getJSONObject(i)
-                val sourceStr = obj.optString("source", "NOTIFICATION")
-                val sourceEnum = try {
-                    PaymentSource.valueOf(sourceStr)
-                } catch (e: Exception) {
-                    PaymentSource.NOTIFICATION
-                }
-                list.add(
-                    Payment(
-                        id = obj.optString("id"),
-                        amount = obj.getLong("amount"),
-                        appName = obj.getString("appName"),
-                        packageName = obj.getString("packageName"),
-                        timestampMillis = obj.getLong("timestampMillis"),
-                        senderName = if (obj.has("senderName")) obj.optString("senderName").takeIf { it.isNotBlank() } else null,
-                        channel = if (obj.has("channel")) obj.optString("channel").takeIf { it.isNotBlank() } else null,
-                        receiverBusiness = if (obj.has("receiverBusiness")) obj.optString("receiverBusiness").takeIf { it.isNotBlank() } else null,
-                        transactionDateTimeText = if (obj.has("transactionDateTimeText")) obj.optString("transactionDateTimeText").takeIf { it.isNotBlank() } else null,
-                        source = sourceEnum
-                    )
-                )
+        val array = JSONArray(jsonStr)
+        for (i in 0 until array.length()) {
+            val obj = array.getJSONObject(i)
+            val sourceStr = obj.optString("source", "NOTIFICATION")
+            val sourceEnum = try {
+                PaymentSource.valueOf(sourceStr)
+            } catch (e: Exception) {
+                PaymentSource.NOTIFICATION
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+
+            val timestampMillis = obj.getLong("timestampMillis")
+            val amount = obj.getLong("amount")
+            val packageName = obj.getString("packageName")
+            val rawId = obj.optString("id").trim()
+            val stableId = if (rawId.isNotEmpty()) {
+                rawId
+            } else {
+                "legacy_${timestampMillis}_${amount}_${packageName.hashCode()}"
+            }
+
+            val txDateTimeText = if (obj.has("transactionDateTimeText")) {
+                obj.optString("transactionDateTimeText").takeIf { it.isNotBlank() }
+            } else {
+                null
+            }
+
+            // Migración segura para registros de versiones anteriores (2.6 GT):
+            // Si el campo hasExactSeconds existe, usarlo; si es un registro antiguo sin ese campo,
+            // conservar segundos si el timestamp tiene segundos o si no provino de texto truncado a minutos.
+            val hasExactSeconds = if (obj.has("hasExactSeconds")) {
+                obj.optBoolean("hasExactSeconds", true)
+            } else {
+                val hasSubMinuteMillis = (timestampMillis % 60_000L) != 0L
+                hasSubMinuteMillis || txDateTimeText == null
+            }
+
+            list.add(
+                Payment(
+                    id = stableId,
+                    amount = amount,
+                    appName = obj.getString("appName"),
+                    packageName = packageName,
+                    timestampMillis = timestampMillis,
+                    senderName = if (obj.has("senderName")) obj.optString("senderName").takeIf { it.isNotBlank() } else null,
+                    channel = if (obj.has("channel")) obj.optString("channel").takeIf { it.isNotBlank() } else null,
+                    receiverBusiness = if (obj.has("receiverBusiness")) obj.optString("receiverBusiness").takeIf { it.isNotBlank() } else null,
+                    transactionDateTimeText = txDateTimeText,
+                    source = sourceEnum,
+                    hasExactSeconds = hasExactSeconds
+                )
+            )
         }
-        return list
+        return list.sortedByDescending { it.timestampMillis }
     }
 
     private fun savePayments(payments: List<Payment>) {
@@ -84,18 +142,20 @@ class PaymentRepository(context: Context) {
                     if (p.receiverBusiness != null) put("receiverBusiness", p.receiverBusiness)
                     if (p.transactionDateTimeText != null) put("transactionDateTimeText", p.transactionDateTimeText)
                     put("source", p.source.name)
+                    put("hasExactSeconds", p.hasExactSeconds)
                 }
                 array.put(obj)
             }
             prefs.edit().putString(KEY_PAYMENTS_JSON, array.toString()).apply()
         } catch (e: Exception) {
-            e.printStackTrace()
+            _errorFlow.value = "Error al guardar historial local: ${e.localizedMessage ?: "Error de escritura"}"
         }
     }
 
     companion object {
         private const val PREFS_NAME = "ambiorix_pay_history"
         private const val KEY_PAYMENTS_JSON = "payments_json"
+        private const val MAX_HISTORY_SIZE = 1000
 
         @Volatile
         private var INSTANCE: PaymentRepository? = null

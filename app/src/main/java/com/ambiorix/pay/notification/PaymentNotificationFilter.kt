@@ -15,7 +15,11 @@ enum class RejectionReason {
 }
 
 sealed class FilterResult {
-    data class Accepted(val amount: Long) : FilterResult()
+    data class Accepted(
+        val amount: Long,
+        val senderName: String? = null
+    ) : FilterResult()
+
     data class Rejected(val reason: RejectionReason) : FilterResult()
 }
 
@@ -119,9 +123,12 @@ class PaymentNotificationFilter(
             return FilterResult.Rejected(RejectionReason.NOTIFICATION_TOO_OLD)
         }
 
+        // Extraer nombre del remitente si está presente en la notificación
+        val senderName = parser.extractSenderName(title, text)
+
         // Pago aceptado -> Registrar para evitar duplicados en la ventana de 2 minutos
         recentDetections.add(RecentDetection(packageName, amount, now))
-        return FilterResult.Accepted(amount)
+        return FilterResult.Accepted(amount = amount, senderName = senderName)
     }
 
     @Synchronized

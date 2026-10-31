@@ -5,11 +5,11 @@ import android.content.ComponentName
 import android.os.Build
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import android.util.Log
 import com.ambiorix.pay.data.KnownApps
 import com.ambiorix.pay.data.Payment
 import com.ambiorix.pay.data.PaymentRepository
 import com.ambiorix.pay.data.SettingsRepository
+import com.ambiorix.pay.sms.PaymentDeduplicator
 
 /**
  * Servicio de escucha de notificaciones de Android.
@@ -104,12 +104,22 @@ class AmbiorixNotificationListener : NotificationListenerService() {
 
         when (result) {
             is FilterResult.Accepted -> {
+                val exactReceptionMillis = if (postTime > 0) postTime else System.currentTimeMillis()
+
+                // Verificar deduplicación cruzada con SMS por si la misma transacción ya fue anunciada
+                if (PaymentDeduplicator.isDuplicateCrossSourceForPush(result.amount, exactReceptionMillis)) {
+                    return
+                }
+                PaymentDeduplicator.recordPushPayment(result.amount, exactReceptionMillis)
+
                 val appDisplayName = KnownApps.getDisplayName(packageName)
                 val payment = Payment(
                     amount = result.amount,
                     appName = appDisplayName,
                     packageName = packageName,
-                    timestampMillis = if (postTime > 0) postTime else System.currentTimeMillis()
+                    timestampMillis = exactReceptionMillis,
+                    senderName = result.senderName,
+                    hasExactSeconds = true
                 )
 
                 // Guardar en el repositorio local de historial

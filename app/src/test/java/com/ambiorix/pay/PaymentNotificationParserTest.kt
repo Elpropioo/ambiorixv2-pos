@@ -89,4 +89,31 @@ class PaymentNotificationParserTest {
         val amount = parser.extractAmount("Nequi", "Bienvenido a Nequi. Disfruta tu día.")
         assertNull(amount)
     }
+
+    @Test
+    fun testExtractsSenderNameFromNequiAndBankNotifications() {
+        val sender1 = parser.extractSenderName(
+            "Nequi",
+            "¡Te enviaron plata! Carlos Rodríguez te transfirió $12.000 a tu cuenta. Saldo $140.000"
+        )
+        assertEquals("Carlos Rodríguez", sender1)
+
+        val sender2 = parser.extractSenderName(
+            "Daviplata",
+            "Has recibido $25.000 de María Pérez."
+        )
+        assertEquals("María Pérez", sender2)
+
+        val sender3 = parser.extractSenderName(
+            "Nequi",
+            "Notificación Nequi: el negocio (TECNICABLES) recibió $45.000 de LAURA GÓMEZ el 30/10/2026 a las 10:03 a.m. a través de Bre-B."
+        )
+        assertEquals("LAURA GÓMEZ", sender3)
+
+        val noSender = parser.extractSenderName(
+            "Bancolombia",
+            "Transferencia recibida por $50.000 en su cuenta."
+        )
+        assertNull(noSender)
+    }
 }

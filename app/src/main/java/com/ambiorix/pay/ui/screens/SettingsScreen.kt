@@ -21,17 +21,26 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.animation.core.*
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.currentStateAsState
 import coil.compose.AsyncImage
 import com.ambiorix.pay.data.*
 import com.ambiorix.pay.sound.SpanishNumbers
+import com.ambiorix.pay.ui.components.rememberReducedMotionEnabled
 import com.ambiorix.pay.ui.theme.*
 import java.io.File
 import java.util.Locale
@@ -99,9 +108,6 @@ fun SettingsScreen(
     var scanToPayText by remember(settings.scanToPayText) { mutableStateOf(settings.scanToPayText) }
     var phoneText by remember(settings.phoneText) { mutableStateOf(settings.phoneText) }
     var additionalText by remember(settings.additionalText) { mutableStateOf(settings.additionalText) }
-    var peerStoreNameInput by remember(settings.peerStoreName) { mutableStateOf(settings.peerStoreName) }
-    var peerStorePhoneInput by remember(settings.peerStorePhone) { mutableStateOf(settings.peerStorePhone) }
-    var peerStoreIdInput by remember(settings.peerStoreId) { mutableStateOf(settings.peerStoreId) }
     var customPackageInput by remember { mutableStateOf("") }
 
     // Diálogos auxiliares
@@ -1115,120 +1121,23 @@ fun SettingsScreen(
                 ) {
                     Icon(Icons.Default.Lock, contentDescription = null, tint = GoldPrimary)
                     Spacer(modifier = Modifier.width(8.dp))
-                }
-            }
-
-            // =========================================================================
-            // COMUNICACIÓN ENTRE TIENDAS (SMS P2P)
-            // =========================================================================
-            SettingsCard(title = "Comunicación entre tiendas") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Coordinación SMS con otra tienda",
-                            color = TextWhite,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = if (settings.peerStoreEnabled) "Coordinando con ${settings.peerStoreName}" else "Desactivada (Modo tienda única)",
-                            color = if (settings.peerStoreEnabled) GoldPrimary else TextGray,
-                            fontSize = 11.sp
-                        )
-                    }
-                    Switch(
-                        checked = settings.peerStoreEnabled,
-                        onCheckedChange = { isEnabled ->
-                            onSettingsChanged { it.copy(peerStoreEnabled = isEnabled) }
-                        },
-                        colors = SwitchDefaults.colors(checkedThumbColor = GoldPrimary)
-                    )
-                }
-
-                if (settings.peerStoreEnabled) {
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Text(
-                        text = "Nombre de la otra tienda:",
-                        color = TextGray,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    OutlinedTextField(
-                        value = peerStoreNameInput,
-                        onValueChange = { 
-                            peerStoreNameInput = it
-                            onSettingsChanged { s -> s.copy(peerStoreName = it) }
-                        },
-                        placeholder = { Text("Ej. Pizzería, Tienda de helados", color = TextMuted) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = TextWhite,
-                            unfocusedTextColor = TextWhite,
-                            focusedBorderColor = GoldPrimary,
-                            unfocusedBorderColor = DarkBorder,
-                            focusedContainerColor = DarkSurfaceElevated,
-                            unfocusedContainerColor = DarkSurfaceElevated
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        text = "Número telefónico del otro dispositivo (Destino SMS):",
-                        color = GoldPrimary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    OutlinedTextField(
-                        value = peerStorePhoneInput,
-                        onValueChange = { 
-                            peerStorePhoneInput = it
-                            onSettingsChanged { s -> s.copy(peerStorePhone = it) }
-                        },
-                        placeholder = { Text("Ej. +573001234567 o 3001234567", color = TextMuted) },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = GoldPrimary,
-                            unfocusedTextColor = GoldPrimary,
-                            focusedBorderColor = GoldPrimary,
-                            unfocusedBorderColor = DarkBorder,
-                            focusedContainerColor = DarkSurfaceElevated,
-                            unfocusedContainerColor = DarkSurfaceElevated
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Este número se utiliza como destino exclusivo para todos los comandos SMS (RESERVE, ACK, BUSY, CANCEL, CANCEL_ACK, PAID, STATUS, HELLO). Se valida antes de cada envío y no se aceptan números vacíos.",
-                        color = TextGray,
-                        fontSize = 11.sp
-                    )
+                    Text("Abrir Ajustes de Seguridad", color = GoldPrimary)
                 }
             }
 
             // =========================================================================
             // HISTORIAL Y SEGURIDAD (CAMBIO DE PIN)
             // =========================================================================
-            SettingsCard(title = "Finanzas y Seguridad") {
+            SettingsCard(title = "Historial y PIN") {
                 Button(
                     onClick = onOpenHistoryClick,
                     colors = ButtonDefaults.buttonColors(containerColor = DarkSurfaceElevated),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Icon(Icons.Default.DateRange, contentDescription = null, tint = GoldPrimary)
+                    Icon(Icons.Default.History, contentDescription = null, tint = GoldPrimary)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Column(horizontalAlignment = Alignment.Start) {
-                        Text("Historial de ventas y pagos", color = GoldPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text("Calendario interactivo: Nequi, efectivo, gastos y productos", color = TextGray, fontSize = 11.sp)
-                    }
+                    Text("Ver Historial de Pagos", color = GoldPrimary)
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -1243,6 +1152,11 @@ fun SettingsScreen(
                     Text("Cambiar PIN de Acceso", color = TextWhite)
                 }
             }
+
+            // =========================================================================
+            // PIE DE PÁGINA DISCRETO Y ELEMENTO VISUAL 888
+            // =========================================================================
+            SettingsFooter888()
 
             Spacer(modifier = Modifier.height(20.dp))
         }
@@ -1879,3 +1793,83 @@ private fun LogoConfigItem(
         }
     }
 }
+
+/**
+ * Pie de página discreto, centrado y elegante en la parte inferior de Configuración.
+ * Incluye el número decorativo "888" con iluminación sutil y parpadeo lento que se detiene
+ * cuando la pantalla deja de estar visible o cuando se prefiere reducción de movimiento.
+ */
+@Composable
+private fun SettingsFooter888() {
+    val reducedMotion = rememberReducedMotionEnabled()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val lifecycleState by lifecycleOwner.lifecycle.currentStateAsState()
+    val isVisibleAndResumed = lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
+
+    val glowAlpha: Float = if (reducedMotion || !isVisibleAndResumed) {
+        0.65f
+    } else {
+        val infiniteTransition = rememberInfiniteTransition(label = "Footer888Glow")
+        val animatedAlpha by infiniteTransition.animateFloat(
+            initialValue = 0.38f,
+            targetValue = 0.92f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 3200, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "GlowAlpha888"
+        )
+        animatedAlpha
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp, bottom = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "Ambiorix Pay",
+            color = TextGray,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = "Versión 2.7",
+            color = TextMuted,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = "Creado por El.propiooo",
+            color = TextMuted,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Normal,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Elemento visual estrictamente decorativo: 888 con iluminación sutil
+        Text(
+            text = "888",
+            style = TextStyle(
+                color = GoldAccent.copy(alpha = (0.55f + glowAlpha * 0.45f).coerceIn(0.4f, 1.0f)),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 3.5.sp,
+                textAlign = TextAlign.Center,
+                shadow = Shadow(
+                    color = GoldPrimary.copy(alpha = glowAlpha * 0.85f),
+                    offset = Offset(0f, 0f),
+                    blurRadius = 18f * glowAlpha
+                )
+            )
+        )
+    }
+}
+
