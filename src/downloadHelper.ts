@@ -28,39 +28,51 @@ const projectRawFiles = import.meta.glob(
 
 export async function triggerClientSideZipDownload() {
   try {
-    const res = await fetch('/AmbiorixPOS-Android-Project.zip');
-    if (res.ok) {
-      const blob = await res.blob();
-      saveAs(blob, 'AmbiorixPOS-Android-Project.zip');
-      return true;
-    }
-  } catch (e) {
-    console.warn('Direct fetch failed, using JSZip fallback', e);
-  }
-
-  try {
     const zip = new JSZip();
 
     for (const [key, content] of Object.entries(projectRawFiles)) {
-      // Remover slash inicial para estructura relativa correcta en el zip
       const relativePath = key.replace(/^\//, '');
       if (typeof content === 'string') {
-        zip.file(relativePath, content);
+        if (relativePath === 'gradlew') {
+          zip.file(relativePath, content, { unixPermissions: '755' });
+        } else {
+          zip.file(relativePath, content);
+        }
       }
+    }
+
+    // Include binary gradle-wrapper.jar if available in public/
+    try {
+      const jarRes = await fetch('/gradle-wrapper.jar');
+      if (jarRes.ok) {
+        const jarBuf = await jarRes.arrayBuffer();
+        zip.file('gradle/wrapper/gradle-wrapper.jar', jarBuf);
+      }
+    } catch {
+      // GitHub Actions workflow also generates wrapper automatically if jar is absent
     }
 
     const blob = await zip.generateAsync({
       type: 'blob',
       compression: 'DEFLATE',
-      compressionOptions: { level: 9 }
+      compressionOptions: { level: 9 },
+      platform: 'UNIX'
     });
 
-    saveAs(blob, 'AmbiorixPOS-Android-Project.zip');
+    saveAs(blob, 'AmbiorixPay-v2.7-GT-Android-Project.zip');
     return true;
   } catch (err) {
     console.error('Error generating client-side zip:', err);
-    // Fallback al endpoint del servidor
-    window.location.href = '/AmbiorixPay-Android-Project.zip';
+    try {
+      const res = await fetch('/AmbiorixPOS-Android-Project.zip');
+      if (res.ok) {
+        const blob = await res.blob();
+        saveAs(blob, 'AmbiorixPay-v2.7-GT-Android-Project.zip');
+        return true;
+      }
+    } catch (e) {
+      console.warn('Fallback zip download failed:', e);
+    }
     return false;
   }
 }

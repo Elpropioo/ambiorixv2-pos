@@ -30,17 +30,35 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK Licenses
+      - name: Configure Android SDK & Accept Licenses (No obsolete 'tools' package)
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_SDK_ROOT="${ANDROID_HOME}"
+          echo "ANDROID_HOME=${ANDROID_HOME}" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=${ANDROID_HOME}" >> $GITHUB_ENV
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+          SDKMANAGER=$(find "${ANDROID_HOME}/cmdline-tools" -name sdkmanager -type f | head -n 1)
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER=$(which sdkmanager || true)
+          fi
+
+          if [ -n "$SDKMANAGER" ]; then
+            yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+            "$SDKMANAGER" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || true
+          fi
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Ensure Gradle Wrapper is executable
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            gradle wrapper --gradle-version 8.9
+          fi
+          chmod +x gradlew
 
       - name: Run Unit Tests
         run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
