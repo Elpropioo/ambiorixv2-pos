@@ -144,8 +144,7 @@ class PosRepository(
                     putExtra(EXTRA_MSG_ID, msgId)
                     putExtra(EXTRA_ENTITY_ID, entityId)
                 }
-                val flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT or
-                    (if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) android.app.PendingIntent.FLAG_IMMUTABLE else 0)
+                val flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
                 val reqCodeBase = (msgId.hashCode() and 0x3FFFFFFF)
                 val parts = smsManager.divideMessage(payload)
                 if (parts != null && parts.size > 1) {
@@ -1482,9 +1481,14 @@ class PosRepository(
 
         var sent = false
         try {
-            if (context != null) {
+            if (context != null &&
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.SEND_SMS
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
                 val smsManager: SmsManager = context.getSystemService(SmsManager::class.java)
-                    ?: SmsManager.getDefault()
+                    ?: @Suppress("DEPRECATION") SmsManager.getDefault()
                 smsManager.sendTextMessage(targetPhone, null, fullPayload, null, null)
                 sent = true
             }
