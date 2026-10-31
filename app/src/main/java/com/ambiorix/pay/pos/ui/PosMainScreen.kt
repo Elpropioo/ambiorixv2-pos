@@ -42,6 +42,7 @@ import com.ambiorix.pay.ui.screens.HistoryScreen
 import coil.compose.AsyncImage
 import com.ambiorix.pay.data.AppSettings
 import com.ambiorix.pay.data.ImageStore
+import com.ambiorix.pay.data.PaymentRepository
 import com.ambiorix.pay.pos.*
 import com.ambiorix.pay.sound.SoundAnnouncer
 import com.ambiorix.pay.ui.theme.*
@@ -80,6 +81,11 @@ fun PosMainScreen(
     val ingredients by posRepository.ingredients.collectAsState()
     val cashShift by posRepository.cashShift.collectAsState()
     val toppingsList by posRepository.toppings.collectAsState()
+
+    val paymentRepository = remember(context) { PaymentRepository.getInstance(context.applicationContext) }
+    val recordedPayments by paymentRepository.paymentsFlow.collectAsState()
+    val isHistoryLoading by paymentRepository.isLoadingFlow.collectAsState()
+    val historyError by paymentRepository.errorFlow.collectAsState()
 
     // Catalog & Cart State
     var selectedCategoryId by remember { mutableStateOf("todos") }
@@ -4059,8 +4065,12 @@ fun PosMainScreen(
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
                 HistoryScreen(
-                    posRepository = posRepository,
-                    onBackClick = { showFinancialHistoryDialog = false }
+                    payments = recordedPayments,
+                    isLoading = isHistoryLoading,
+                    errorMessage = historyError,
+                    onRetryLoad = { paymentRepository.reloadFromStorage() },
+                    onBackClick = { showFinancialHistoryDialog = false },
+                    onClearHistory = { paymentRepository.clearHistory() }
                 )
             }
         }

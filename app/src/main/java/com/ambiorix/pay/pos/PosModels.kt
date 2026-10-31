@@ -21,18 +21,36 @@ data class ProductVariant(
     val id: String,
     val name: String,
     val priceDelta: Long = 0L,
+    val gramsMultiplier: Double = 1.0,
     val weightGrams: Int = 0,
     val coneUnits: Int = 0,
     val cupUnits: Int = 0
-)
+) {
+    constructor(
+        id: String,
+        name: String,
+        priceDelta: Long = 0L,
+        weightGrams: Int,
+        coneUnits: Int = 0,
+        cupUnits: Int = 0
+    ) : this(id, name, priceDelta, 1.0, weightGrams, coneUnits, cupUnits)
+}
 
 data class ToppingOption(
     val id: String,
     val name: String,
     val price: Long = 0L,
     val ingredientId: String? = null,
-    val gramsRequired: Int = 0
-)
+    val gramsRequired: Double = 0.0
+) {
+    constructor(
+        id: String,
+        name: String,
+        price: Long = 0L,
+        ingredientId: String? = null,
+        gramsRequired: Int
+    ) : this(id, name, price, ingredientId, gramsRequired.toDouble())
+}
 
 data class RecipeItem(
     val ingredientId: String,
