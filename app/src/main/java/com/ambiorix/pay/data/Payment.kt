@@ -13,7 +13,11 @@ import java.util.UUID
 enum class PaymentSource {
     NOTIFICATION, // Notificación Push de Android
     SMS,          // Mensaje de texto SMS (ej. Nequi 890806)
-    SIMULATED     // Prueba manual desde la app
+    SIMULATED;    // Prueba manual desde la app
+
+    companion object {
+        val PUSH_NOTIFICATION: PaymentSource = NOTIFICATION
+    }
 }
 
 /**

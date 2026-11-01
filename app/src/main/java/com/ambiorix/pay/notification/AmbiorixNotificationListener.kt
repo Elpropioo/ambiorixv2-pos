@@ -166,7 +166,7 @@ class AmbiorixNotificationListener : NotificationListenerService() {
                     packageName = if (isSmsApp) "com.nequi.MobileApp" else packageName,
                     timestampMillis = exactReceptionMillis,
                     senderName = result.senderName,
-                    source = if (isSmsApp) com.ambiorix.pay.data.PaymentSource.SMS else com.ambiorix.pay.data.PaymentSource.PUSH_NOTIFICATION,
+                    source = if (isSmsApp) com.ambiorix.pay.data.PaymentSource.SMS else com.ambiorix.pay.data.PaymentSource.NOTIFICATION,
                     hasExactSeconds = true
                 )
 
