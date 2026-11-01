@@ -37,7 +37,11 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.currentStateAsState
+import androidx.compose.foundation.Image
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.res.painterResource
 import coil.compose.AsyncImage
+import com.ambiorix.pay.R
 import com.ambiorix.pay.data.*
 import com.ambiorix.pay.sound.SpanishNumbers
 import com.ambiorix.pay.ui.components.rememberReducedMotionEnabled
@@ -1796,8 +1800,8 @@ private fun LogoConfigItem(
 
 /**
  * Pie de página discreto, centrado y elegante en la parte inferior de Configuración.
- * Incluye el número decorativo "888" con iluminación sutil y parpadeo lento que se detiene
- * cuando la pantalla deja de estar visible o cuando se prefiere reducción de movimiento.
+ * Incluye el emblema dorado AAA, la firma caligráfica del desarrollador ("Ambiorix"),
+ * el número decorativo "888" con iluminación sutil y un Easter Egg de Créditos de Autor al tocarlo.
  */
 @Composable
 private fun SettingsFooter888() {
@@ -1805,6 +1809,7 @@ private fun SettingsFooter888() {
     val lifecycleOwner = LocalLifecycleOwner.current
     val lifecycleState by lifecycleOwner.lifecycle.currentStateAsState()
     val isVisibleAndResumed = lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
+    var showDeveloperHallOfFame by remember { mutableStateOf(false) }
 
     val glowAlpha: Float = if (reducedMotion || !isVisibleAndResumed) {
         0.65f
@@ -1825,7 +1830,10 @@ private fun SettingsFooter888() {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 12.dp, bottom = 8.dp),
+            .padding(top = 12.dp, bottom = 12.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .clickable { showDeveloperHallOfFame = true }
+            .padding(vertical = 10.dp, horizontal = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
@@ -1852,7 +1860,19 @@ private fun SettingsFooter888() {
             textAlign = TextAlign.Center
         )
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Firma caligráfica oficial del autor (Sello de Desarrollador)
+        Image(
+            painter = painterResource(id = R.drawable.ic_ambiorix_signature),
+            contentDescription = "Firma Oficial Ambiorix",
+            modifier = Modifier
+                .height(44.dp)
+                .alpha(0.88f),
+            contentScale = ContentScale.Fit
+        )
+
+        Spacer(modifier = Modifier.height(6.dp))
 
         // Elemento visual estrictamente decorativo: 888 con iluminación sutil
         Text(
@@ -1869,6 +1889,86 @@ private fun SettingsFooter888() {
                     blurRadius = 18f * glowAlpha
                 )
             )
+        )
+    }
+
+    // Easter Egg de Desarrollador: Placa de Autor e Ingeniería al tocar la firma o el pie de página
+    if (showDeveloperHallOfFame) {
+        AlertDialog(
+            onDismissRequest = { showDeveloperHallOfFame = false },
+            containerColor = DarkSurface,
+            shape = RoundedCornerShape(24.dp),
+            title = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ambiorix_logo),
+                        contentDescription = "Emblema AAA",
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(CircleShape)
+                            .background(DarkBackground)
+                            .border(1.5.dp, GoldPrimary, CircleShape)
+                            .padding(8.dp),
+                        contentScale = ContentScale.Fit
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "SELLO DE AUTOR • EDICIÓN 2.7 GT",
+                        color = GoldPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 1.6.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Arquitectura 100% local, blindada y diseñada a medida para comercios de alto tráfico.",
+                        color = TextGrayLight,
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = DarkBackground,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, GoldPrimary.copy(alpha = 0.35f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(vertical = 14.dp, horizontal = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Image(
+                                painter = painterResource(id = R.drawable.ic_ambiorix_signature),
+                                contentDescription = "Firma Caligráfica Ambiorix",
+                                modifier = Modifier.height(64.dp),
+                                contentScale = ContentScale.Fit
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Firmado por El.propiooo • Serie 888",
+                                color = TextMuted,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDeveloperHallOfFame = false }) {
+                    Text("Cerrar", color = GoldPrimary, fontWeight = FontWeight.Bold)
+                }
+            }
         )
     }
 }

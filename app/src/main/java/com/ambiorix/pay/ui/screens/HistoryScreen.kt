@@ -50,10 +50,28 @@ fun HistoryScreen(
 ) {
     var showConfirmDelete by remember { mutableStateOf(false) }
 
-    val todayKey = remember { PaymentHistoryCalculator.getTodayDayKey() }
+    var todayKey by remember { mutableStateOf(PaymentHistoryCalculator.getTodayDayKey()) }
     var displayedYear by remember { mutableIntStateOf(todayKey.year) }
     var displayedMonth by remember { mutableIntStateOf(todayKey.month) }
     var selectedDayKey by remember { mutableStateOf(todayKey) }
+
+    // Cierre de día automático a medianoche (00:00:00 America/Bogota):
+    // Si la pantalla permanece abierta al cambiar de día, avanza automáticamente al nuevo día en $ 0.
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(30_000L)
+            val currentToday = PaymentHistoryCalculator.getTodayDayKey()
+            if (currentToday != todayKey) {
+                val wasOnToday = (selectedDayKey == todayKey)
+                todayKey = currentToday
+                if (wasOnToday) {
+                    displayedYear = currentToday.year
+                    displayedMonth = currentToday.month
+                    selectedDayKey = currentToday
+                }
+            }
+        }
+    }
 
     // Recalcular resumen mensual y diario de forma reactiva cuando cambien los pagos o la fecha seleccionada
     val monthlySummary = remember(payments, displayedYear, displayedMonth) {

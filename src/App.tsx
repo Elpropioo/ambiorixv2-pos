@@ -586,15 +586,46 @@ export default function App() {
     }
   }, [paymentHistory]);
 
-  // Calendar state in Colombia timezone
-  const todayKey = useMemo<DayKey>(() => {
+  // Calendar state in Colombia timezone with automatic midnight rollover (00:00:00 America/Bogota)
+  const [todayKey, setTodayKey] = useState<DayKey>(() => {
     const parts = getColombiaDateParts(Date.now());
     return { year: parts.year, month: parts.month, day: parts.day };
-  }, []);
+  });
 
   const [displayedYear, setDisplayedYear] = useState<number>(todayKey.year);
   const [displayedMonth, setDisplayedMonth] = useState<number>(todayKey.month);
   const [selectedDayKey, setSelectedDayKey] = useState<DayKey>(todayKey);
+  const [showDeveloperSealModal, setShowDeveloperSealModal] = useState<boolean>(false);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const parts = getColombiaDateParts(Date.now());
+      const currentToday: DayKey = { year: parts.year, month: parts.month, day: parts.day };
+      setTodayKey(prevToday => {
+        if (
+          prevToday.year !== currentToday.year ||
+          prevToday.month !== currentToday.month ||
+          prevToday.day !== currentToday.day
+        ) {
+          setSelectedDayKey(prevSelected => {
+            const wasOnToday =
+              prevSelected.year === prevToday.year &&
+              prevSelected.month === prevToday.month &&
+              prevSelected.day === prevToday.day;
+            if (wasOnToday) {
+              setDisplayedYear(currentToday.year);
+              setDisplayedMonth(currentToday.month);
+              return currentToday;
+            }
+            return prevSelected;
+          });
+          return currentToday;
+        }
+        return prevToday;
+      });
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Confirmed unique payments
   const confirmedUniquePayments = useMemo(
@@ -1032,8 +1063,12 @@ export default function App() {
       <header className="border-b border-slate-800 bg-[#0B0F17]/95 backdrop-blur sticky top-0 z-40 px-4 py-3">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center space-x-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center shadow-lg shadow-amber-500/20 text-black font-black text-lg">
-              A
+            <div className="w-10 h-10 rounded-full bg-[#131B2A] border border-amber-500/50 p-1 flex items-center justify-center shadow-lg shadow-amber-500/20">
+              <img
+                src="/assets/logo.png"
+                alt="Ambiorix Pay Logo"
+                className="w-full h-full object-contain"
+              />
             </div>
             <div>
               <div className="flex items-center space-x-2">
@@ -1216,9 +1251,13 @@ export default function App() {
                 <div className="flex-1 flex flex-col justify-between p-5 pt-7 text-white select-none overflow-y-auto">
                   <div>
                     <div className="flex items-center justify-between">
-                      <span className="font-black text-amber-500 tracking-widest text-lg">
-                        AMBIORIX
-                      </span>
+                      <div className="flex items-center">
+                        <img
+                          src="/assets/firma_ambiorix.svg"
+                          alt="Firma Ambiorix"
+                          className="h-9 object-contain"
+                        />
+                      </div>
                       <div className="flex items-center space-x-2">
                         <button
                           onClick={() => setActiveTab('history')}
@@ -2126,15 +2165,26 @@ export default function App() {
                   </div>
 
                   {/* ================================================================= */}
-                  {/* 4. PIE DE PÁGINA EN CONFIGURACIÓN + ELEMENTO VISUAL 888           */}
+                  {/* 4. PIE DE PÁGINA EN CONFIGURACIÓN + FIRMA DE AUTOR + 888          */}
                   {/* ================================================================= */}
-                  <footer className="pt-4 pb-3 text-center select-none border-t border-slate-800/60">
+                  <footer
+                    onClick={() => setShowDeveloperSealModal(true)}
+                    className="pt-4 pb-3 text-center select-none border-t border-slate-800/60 hover:bg-slate-900/40 rounded-2xl transition cursor-pointer group"
+                    title="Toca para ver el Sello de Autor e Ingeniería"
+                  >
                     <p className="text-xs font-semibold text-slate-400">Ambiorix Pay</p>
                     <p className="text-[11px] text-slate-500 mt-0.5">Versión 2.7</p>
                     <p className="text-[11px] text-slate-500 mt-0.5">Creado por El.propiooo</p>
+                    <div className="mt-2 flex justify-center">
+                      <img
+                        src="/assets/firma_ambiorix.svg"
+                        alt="Firma Oficial Ambiorix"
+                        className="h-11 object-contain opacity-90 group-hover:opacity-100 transition"
+                      />
+                    </div>
                     <div
                       aria-hidden="true"
-                      className={`mt-2.5 text-sm font-extrabold tracking-[0.28em] text-amber-300 ${
+                      className={`mt-1.5 text-sm font-extrabold tracking-[0.28em] text-amber-300 ${
                         isPageVisible ? 'ambiorix-888-glow' : 'opacity-65'
                       }`}
                     >
@@ -2415,6 +2465,58 @@ export default function App() {
               className="mt-4 text-xs text-slate-400 hover:text-white cursor-pointer"
             >
               Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* DEVELOPER SIGNATURE & HALL OF FAME MODAL (EASTER EGG) */}
+      {showDeveloperSealModal && (
+        <div
+          onClick={() => setShowDeveloperSealModal(false)}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in"
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            className="bg-[#0B0F17] border border-amber-500/40 rounded-3xl p-6 max-w-sm w-full shadow-2xl shadow-amber-500/10 flex flex-col items-center text-center"
+          >
+            <div className="w-16 h-16 rounded-full bg-[#131B2A] border-2 border-amber-500 p-2 flex items-center justify-center shadow-lg shadow-amber-500/20 mb-3">
+              <img
+                src="/assets/logo.png"
+                alt="Emblema AAA"
+                className="w-full h-full object-contain"
+              />
+            </div>
+
+            <span className="text-[11px] font-extrabold tracking-[0.2em] text-amber-400 uppercase">
+              Sello de Autor • Edición 2.7 GT
+            </span>
+            <h4 className="text-base font-black text-white mt-1">
+              Ambiorix Pay — Ingeniería Oficial
+            </h4>
+            <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+              Arquitectura 100% local, blindada y diseñada a medida para comercios de alto tráfico en Colombia.
+            </p>
+
+            <div className="w-full mt-4 p-4 rounded-2xl bg-[#131B2A]/90 border border-amber-500/30 flex flex-col items-center">
+              <img
+                src="/assets/firma_ambiorix.svg"
+                alt="Firma Caligráfica Ambiorix"
+                className="h-16 object-contain"
+              />
+              <span className="text-[11px] text-slate-400 font-medium mt-1">
+                Firmado por <strong className="text-amber-300">El.propiooo</strong>
+              </span>
+              <span className="mt-1.5 text-xs font-extrabold tracking-[0.3em] text-amber-400 ambiorix-888-glow">
+                888
+              </span>
+            </div>
+
+            <button
+              onClick={() => setShowDeveloperSealModal(false)}
+              className="mt-5 w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl transition cursor-pointer"
+            >
+              Cerrar Sello de Autor
             </button>
           </div>
         </div>
