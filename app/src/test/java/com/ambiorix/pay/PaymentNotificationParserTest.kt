@@ -140,4 +140,34 @@ class PaymentNotificationParserTest {
         )
         assertNull(noSender)
     }
+
+    @Test
+    fun testNequiSmsParserFormats() {
+        val res1 = com.ambiorix.pay.sms.NequiSmsParser.parse(
+            "890806",
+            "Notificación Nequi: el negocio (TECNICABLES, nombre ficticio) recibió $45.000 de LAURA GÓMEZ el 30/10/2026 a las 10:03 a.m. a través de Bre-B."
+        )
+        org.junit.Assert.assertTrue(res1 is com.ambiorix.pay.sms.SmsPaymentParseResult.Success)
+        val p1 = (res1 as com.ambiorix.pay.sms.SmsPaymentParseResult.Success).payment
+        assertEquals(45000L, p1.amount)
+        assertEquals("LAURA GÓMEZ", p1.senderName)
+
+        val res2 = com.ambiorix.pay.sms.NequiSmsParser.parse(
+            "890806",
+            "Nequi: ¡Te llegó plata! Recibiste $35.000 de Carlos Andrés Pérez en tu Nequi. Tu nuevo saldo disponible es $180.000."
+        )
+        org.junit.Assert.assertTrue(res2 is com.ambiorix.pay.sms.SmsPaymentParseResult.Success)
+        val p2 = (res2 as com.ambiorix.pay.sms.SmsPaymentParseResult.Success).payment
+        assertEquals(35000L, p2.amount)
+        assertEquals("Carlos Andrés Pérez", p2.senderName)
+
+        val res3 = com.ambiorix.pay.sms.NequiSmsParser.parse(
+            "85954",
+            "¡Te enviaron plata! Carlos Rodríguez te transfirió $12.000 a tu cuenta. Saldo $140.000"
+        )
+        org.junit.Assert.assertTrue(res3 is com.ambiorix.pay.sms.SmsPaymentParseResult.Success)
+        val p3 = (res3 as com.ambiorix.pay.sms.SmsPaymentParseResult.Success).payment
+        assertEquals(12000L, p3.amount)
+        assertEquals("Carlos Rodríguez", p3.senderName)
+    }
 }

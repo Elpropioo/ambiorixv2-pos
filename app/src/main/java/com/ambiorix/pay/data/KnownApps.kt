@@ -57,7 +57,33 @@ object KnownApps {
             name = "Lulo Bank",
             primaryPackage = "com.lulobank.mobile",
             notes = "Neobanco."
+        ),
+        BankingAppInfo(
+            id = "mensajes_sms_nequi",
+            name = "Mensajes SMS (Nequi 890806 / Bre-B)",
+            primaryPackage = "com.google.android.apps.messaging",
+            alternativePackages = listOf(
+                "com.samsung.android.messaging",
+                "com.android.mms",
+                "com.miui.mms",
+                "com.huawei.message",
+                "com.motorola.messaging",
+                "com.coloros.mms",
+                "com.oneplus.mms"
+            ),
+            notes = "Detecta confirmaciones de pago de Nequi (890806 / 85954) y Bre-B que llegan por mensaje de texto SMS."
         )
+    )
+
+    val SMS_PACKAGES: Set<String> = setOf(
+        "com.google.android.apps.messaging",
+        "com.samsung.android.messaging",
+        "com.android.mms",
+        "com.miui.mms",
+        "com.huawei.message",
+        "com.motorola.messaging",
+        "com.coloros.mms",
+        "com.oneplus.mms"
     )
 
     val DEFAULT_ENABLED_PACKAGES: Set<String> = setOf(
@@ -67,9 +93,16 @@ object KnownApps {
         "com.bancolombia.billetera",
         "com.davivienda.daviplataapp",
         "com.davivienda.daviplata"
-    )
+    ) + SMS_PACKAGES
+
+    fun isSmsPackage(packageName: String): Boolean {
+        return SMS_PACKAGES.any { it.equals(packageName, ignoreCase = true) }
+    }
 
     fun getDisplayName(packageName: String): String {
+        if (isSmsPackage(packageName)) {
+            return "Nequi SMS"
+        }
         for (app in DEFAULT_APPS) {
             if (app.primaryPackage.equals(packageName, ignoreCase = true) ||
                 app.alternativePackages.any { it.equals(packageName, ignoreCase = true) }

@@ -72,9 +72,14 @@ class AmbiorixNotificationListener : NotificationListenerService() {
         }
 
         // 3. REGLA CRÍTICA DE PRIVACIDAD:
-        // Si el paquete NO está en la lista de apps autorizadas, descartar inmediatamente
-        // SIN LEER extras ni el contenido de la notificación.
-        val allAuthorized = settings.enabledPackages + settings.customPackages
+        // Si smsPaymentEnabled está activo, autorizar automáticamente los paquetes de Mensajes SMS
+        // únicamente para detectar notificaciones bancarias de Nequi (890806 / Bre-B).
+        val baseAuthorized = settings.enabledPackages + settings.customPackages
+        val allAuthorized = if (settings.smsPaymentEnabled) {
+            baseAuthorized + KnownApps.SMS_PACKAGES
+        } else {
+            baseAuthorized - KnownApps.SMS_PACKAGES
+        }
         val isAuthorized = allAuthorized.any { it.equals(packageName, ignoreCase = true) }
         if (!isAuthorized) {
             return
@@ -90,6 +95,49 @@ class AmbiorixNotificationListener : NotificationListenerService() {
         val fullBody = if (!bigText.isNullOrBlank()) bigText else text
 
         val postTime = sbn.postTime
+        val exactReceptionMillis = if (postTime > 0) postTime else System.currentTimeMillis()
+
+        // Si proviene de la app de Mensajes SMS del teléfono (Google Messages, Samsung Messages, etc.),
+        // verificar que sea específicamente un SMS de pago de Nequi / Bre-B y no un chat personal.
+        if (KnownApps.isSmsPackage(packageName)) {
+            if (!settings.smsPaymentEnabled) return
+
+            val smsResult = com.ambiorix.pay.sms.NequiSmsParser.parse(title, fullBody)
+            if (smsResult is com.ambiorix.pay.sms.SmsPaymentParseResult.Success) {
+                val parsed = smsResult.payment
+                val fingerprint = PaymentDeduplicator.computeSmsFingerprint(
+                    amount = parsed.amount,
+                    senderName = parsed.senderName,
+                    receiverBusiness = parsed.receiverBusiness,
+                    dateTimeText = parsed.transactionDateTimeText,
+                    channel = parsed.channel,
+                    rawBody = fullBody.orEmpty()
+                )
+                if (PaymentDeduplicator.isDuplicateSms(fingerprint, exactReceptionMillis)) return
+                if (PaymentDeduplicator.isDuplicateCrossSourceForPush(parsed.amount, exactReceptionMillis)) return
+                PaymentDeduplicator.markSmsProcessed(fingerprint, parsed.amount, parsed.senderName, exactReceptionMillis)
+                PaymentDeduplicator.recordPushPayment(parsed.amount, exactReceptionMillis)
+
+                val payment = Payment(
+                    amount = parsed.amount,
+                    appName = "Nequi SMS",
+                    packageName = "com.nequi.MobileApp",
+                    timestampMillis = exactReceptionMillis,
+                    senderName = parsed.senderName,
+                    channel = parsed.channel ?: "Nequi",
+                    source = com.ambiorix.pay.data.PaymentSource.SMS,
+                    hasExactSeconds = true
+                )
+                paymentRepository.recordPayment(payment)
+                NotificationPaymentEvents.emitRealPayment(payment, applicationContext)
+                return
+            }
+
+            // Si no coincidió con el patrón estricto, solo permitir evaluación si el remitente o cuerpo es de Nequi / Bre-B
+            if (!isNequiSmsNotification(title, fullBody)) {
+                return
+            }
+        }
 
         // Evaluar con el filtro determinista
         val result = filter.evaluate(
@@ -104,21 +152,21 @@ class AmbiorixNotificationListener : NotificationListenerService() {
 
         when (result) {
             is FilterResult.Accepted -> {
-                val exactReceptionMillis = if (postTime > 0) postTime else System.currentTimeMillis()
-
                 // Verificar deduplicación cruzada con SMS por si la misma transacción ya fue anunciada
                 if (PaymentDeduplicator.isDuplicateCrossSourceForPush(result.amount, exactReceptionMillis)) {
                     return
                 }
                 PaymentDeduplicator.recordPushPayment(result.amount, exactReceptionMillis)
 
-                val appDisplayName = KnownApps.getDisplayName(packageName)
+                val isSmsApp = KnownApps.isSmsPackage(packageName)
+                val appDisplayName = if (isSmsApp) "Nequi SMS" else KnownApps.getDisplayName(packageName)
                 val payment = Payment(
                     amount = result.amount,
                     appName = appDisplayName,
-                    packageName = packageName,
+                    packageName = if (isSmsApp) "com.nequi.MobileApp" else packageName,
                     timestampMillis = exactReceptionMillis,
                     senderName = result.senderName,
+                    source = if (isSmsApp) com.ambiorix.pay.data.PaymentSource.SMS else com.ambiorix.pay.data.PaymentSource.PUSH_NOTIFICATION,
                     hasExactSeconds = true
                 )
 
@@ -126,11 +174,24 @@ class AmbiorixNotificationListener : NotificationListenerService() {
                 paymentRepository.recordPayment(payment)
 
                 // Emitir por el canal en memoria hacia la interfaz gráfica
-                NotificationPaymentEvents.emitRealPayment(payment)
+                NotificationPaymentEvents.emitRealPayment(payment, applicationContext)
             }
             is FilterResult.Rejected -> {
                 // Descartada silenciosamente sin escribir montos en logs
             }
         }
+    }
+
+    private fun isNequiSmsNotification(title: String?, body: String?): Boolean {
+        val cleanTitle = title?.trim().orEmpty()
+        val lowerTitle = cleanTitle.lowercase()
+        val lowerBody = body?.lowercase().orEmpty()
+        val knownShortCodes = setOf("890806", "85954", "85432", "87700")
+        return cleanTitle in knownShortCodes ||
+                lowerTitle.contains("890806") ||
+                lowerTitle.contains("85954") ||
+                lowerTitle.contains("nequi") ||
+                lowerBody.contains("nequi") ||
+                lowerBody.contains("bre-b")
     }
 }

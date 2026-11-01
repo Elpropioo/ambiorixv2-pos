@@ -515,6 +515,7 @@ export default function App() {
   const [closeHour, setCloseHour] = useState(20);
   const [closeMinute] = useState(0);
   const [activeDays, setActiveDays] = useState<number[]>([1, 2, 3, 4, 5, 6]);
+  const [smsPaymentEnabled, setSmsPaymentEnabled] = useState(true);
 
   const formatTime12 = (h: number, m: number) => {
     const hour12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
@@ -1811,9 +1812,44 @@ export default function App() {
 
                     <div className="mt-2.5 pt-2 border-t border-slate-800 text-[10px] text-slate-300 leading-tight">
                       {isServiceEnabled
-                        ? 'Servicio activo para detectar notificaciones bancarias de pago.'
+                        ? 'Servicio activo para detectar notificaciones bancarias y SMS de pago.'
                         : 'Servicio en pausa. Se detienen los avisos sonoros y no se procesan pagos. El historial se conserva.'}
                     </div>
+                  </div>
+
+                  {/* DETECCIÓN DE SMS DE NEQUI (890806 / BRE-B) */}
+                  <div className="bg-[#131B2A] p-3.5 rounded-2xl border border-amber-500/40 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2.5">
+                        <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${
+                          smsPaymentEnabled ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' : 'bg-slate-800 text-slate-400'
+                        }`}>
+                          <Smartphone className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-white block">Detección de SMS de Nequi</span>
+                          <span className={`text-[10px] font-semibold ${
+                            smsPaymentEnabled ? 'text-amber-400' : 'text-slate-400'
+                          }`}>
+                            {smsPaymentEnabled
+                              ? 'ACTIVO: Detecta SMS 890806 / 85954 y Bre-B'
+                              : 'Solo notificaciones push de la app'}
+                          </span>
+                        </div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={smsPaymentEnabled}
+                        onChange={e => setSmsPaymentEnabled(e.target.checked)}
+                        className="accent-amber-500 w-4 h-4 cursor-pointer"
+                      />
+                    </div>
+                    {smsPaymentEnabled && (
+                      <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-[10px] text-emerald-300 flex items-center space-x-2">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                        <span>Doble canal SMS activo (Receptor SMS directo + Notificación de Mensajes con deduplicación)</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* 2. PROGRAMACIÓN DE HORARIOS COMERCIALES */}

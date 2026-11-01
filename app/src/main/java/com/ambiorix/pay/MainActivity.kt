@@ -1,13 +1,17 @@
 package com.ambiorix.pay
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -16,12 +20,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.repeatOnLifecycle
 import com.ambiorix.pay.data.Payment
 import com.ambiorix.pay.data.SettingsRepository
 import com.ambiorix.pay.notification.NotificationPaymentEvents
@@ -41,6 +45,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         settingsRepository = SettingsRepository.getInstance(applicationContext)
         soundAnnouncer = SoundAnnouncer.getInstance(applicationContext)
+        NotificationPaymentEvents.setMainActivityActive(true)
 
         configureKioskWindowFlags()
         lockBackButton()
@@ -52,6 +57,22 @@ class MainActivity : ComponentActivity() {
                 val paymentQueue = remember { mutableStateListOf<Payment>() }
                 var showPinDialog by remember { mutableStateOf(false) }
                 var isNotificationAccessGranted by remember { mutableStateOf(checkNotificationAccess()) }
+                var isSmsPermissionGranted by remember { mutableStateOf(checkSmsPermission()) }
+
+                val smsPermissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestMultiplePermissions()
+                ) { permissions ->
+                    isSmsPermissionGranted = permissions[Manifest.permission.RECEIVE_SMS] == true || checkSmsPermission()
+                }
+
+                // Solicitar permiso de lectura de SMS automáticamente si la detección de SMS de Nequi está activa
+                LaunchedEffect(settings.smsPaymentEnabled) {
+                    if (settings.smsPaymentEnabled && !checkSmsPermission()) {
+                        smsPermissionLauncher.launch(
+                            arrayOf(Manifest.permission.RECEIVE_SMS)
+                        )
+                    }
+                }
 
                 // Evaluar estado operacional diferenciando estado, permisos y horario comercial
                 val isWithinSchedule = remember(settings.businessHours) {
@@ -97,38 +118,36 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Monitorear pagos entrantes (reales o simulados)
+                // Monitorear pagos entrantes (reales por Notificación/SMS o simulados) de forma continua
                 LaunchedEffect(Unit) {
-                    repeatOnLifecycle(Lifecycle.State.STARTED) {
-                        NotificationPaymentEvents.paymentEvents.collect { event ->
-                            val payment = when (event) {
-                                is UiPaymentEvent.RealPayment -> {
-                                    val currentSettings = settingsRepository.getSettings()
-                                    if (!currentSettings.isServiceEnabled || !currentSettings.businessHours.isWithinBusinessHours()) {
-                                        return@collect
-                                    }
-                                    event.payment
+                    NotificationPaymentEvents.paymentEvents.collect { event ->
+                        val currentSettings = settingsRepository.getSettings()
+                        val payment = when (event) {
+                            is UiPaymentEvent.RealPayment -> {
+                                if (!currentSettings.isServiceEnabled || !currentSettings.businessHours.isWithinBusinessHours()) {
+                                    return@collect
                                 }
-                                is UiPaymentEvent.SimulatedTestPayment -> {
-                                    event.payment
-                                }
+                                event.payment
                             }
+                            is UiPaymentEvent.SimulatedTestPayment -> {
+                                event.payment
+                            }
+                        }
 
-                            // Gestión de cola: si ya hay una confirmación en pantalla, encolar el nuevo pago
-                            // para que no se superpongan ni se pierda ninguno
-                            if (currentPayment == null) {
-                                currentPayment = payment
-                                soundAnnouncer.announce(
-                                    amount = payment.amount,
-                                    playSound = settings.soundEnabled,
-                                    speakVoice = settings.ttsEnabled,
-                                    includeThankYou = settings.includeThankYou,
-                                    senderName = payment.senderName,
-                                    announceSenderName = settings.announceSenderName
-                                )
-                            } else {
-                                paymentQueue.add(payment)
-                            }
+                        // Gestión de cola: si ya hay una confirmación en pantalla, encolar el nuevo pago
+                        // para que no se superpongan ni se pierda ninguno
+                        if (currentPayment == null) {
+                            currentPayment = payment
+                            soundAnnouncer.announce(
+                                amount = payment.amount,
+                                playSound = currentSettings.soundEnabled,
+                                speakVoice = currentSettings.ttsEnabled,
+                                includeThankYou = currentSettings.includeThankYou,
+                                senderName = payment.senderName,
+                                announceSenderName = currentSettings.announceSenderName
+                            )
+                        } else {
+                            paymentQueue.add(payment)
                         }
                     }
                 }
@@ -139,6 +158,7 @@ class MainActivity : ComponentActivity() {
                         if (event == Lifecycle.Event.ON_RESUME) {
                             hideSystemBars()
                             isNotificationAccessGranted = checkNotificationAccess()
+                            isSmsPermissionGranted = checkSmsPermission()
                         }
                     }
                     lifecycle.addObserver(observer)
@@ -233,6 +253,13 @@ class MainActivity : ComponentActivity() {
         return enabledPackages.contains(packageName)
     }
 
+    private fun checkSmsPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECEIVE_SMS
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
     private fun openNotificationSettings() {
         try {
             val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
@@ -245,11 +272,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        NotificationPaymentEvents.setMainActivityActive(true)
         hideSystemBars()
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        NotificationPaymentEvents.setMainActivityActive(false)
         soundAnnouncer.stop()
     }
 }

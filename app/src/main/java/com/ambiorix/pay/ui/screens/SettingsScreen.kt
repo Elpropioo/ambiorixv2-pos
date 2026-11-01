@@ -56,9 +56,12 @@ fun SettingsScreen(
     isTtsReady: Boolean = true,
     ttsStatusDetail: String = "",
     isNotificationAccessGranted: Boolean = true,
+    isSmsPermissionGranted: Boolean = true,
     onSettingsChanged: ((AppSettings) -> AppSettings) -> Unit,
     onBackClick: () -> Unit,
     onOpenNotificationSettings: () -> Unit,
+    onRequestSmsPermission: () -> Unit = {},
+    onOpenAppDetailsSettings: () -> Unit = {},
     onOpenScreenPinningSettings: () -> Unit,
     onOpenTtsSettings: () -> Unit,
     onOpenHistoryClick: () -> Unit,
@@ -341,6 +344,151 @@ fun SettingsScreen(
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold
                 )
+            }
+
+            // =========================================================================
+            // DETECCIÓN DE SMS DE NEQUI (890806 / BRE-B)
+            // =========================================================================
+            SettingsCard(title = "Detección de SMS de Nequi (890806 / Bre-B)") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Sms,
+                            contentDescription = null,
+                            tint = if (settings.smsPaymentEnabled) GoldPrimary else TextGray,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Detectar pagos por SMS de Nequi",
+                                color = TextWhite,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Text(
+                                text = if (settings.smsPaymentEnabled)
+                                    "ACTIVO: Detecta mensajes de texto de Nequi (890806 / 85954) y Bre-B"
+                                else
+                                    "DESACTIVADO: Solo escucha notificaciones push de la app",
+                                color = if (settings.smsPaymentEnabled) GoldPrimary else TextGray,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                    Switch(
+                        checked = settings.smsPaymentEnabled,
+                        onCheckedChange = { enabled ->
+                            onSettingsChanged { current ->
+                                val updatedPkgs = if (enabled) {
+                                    current.enabledPackages + KnownApps.SMS_PACKAGES
+                                } else {
+                                    current.enabledPackages - KnownApps.SMS_PACKAGES
+                                }
+                                current.copy(
+                                    smsPaymentEnabled = enabled,
+                                    enabledPackages = updatedPkgs
+                                )
+                            }
+                            if (enabled && !isSmsPermissionGranted) {
+                                onRequestSmsPermission()
+                            }
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = GoldPrimary
+                        )
+                    )
+                }
+
+                if (settings.smsPaymentEnabled) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isSmsPermissionGranted)
+                            SuccessGreen.copy(alpha = 0.14f)
+                        else
+                            GoldPrimary.copy(alpha = 0.14f),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (isSmsPermissionGranted) SuccessGreen.copy(alpha = 0.5f) else GoldPrimary.copy(alpha = 0.6f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(9.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isSmsPermissionGranted) SuccessGreen else GoldPrimary)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (isSmsPermissionGranted)
+                                        "Doble canal SMS activo (Receptor SMS + Notificaciones)"
+                                    else
+                                        "Canal por Notificaciones activo • Falta Permiso Directo de SMS",
+                                    color = TextWhite,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isSmsPermissionGranted)
+                                    "Tu teléfono confirmará al instante los mensajes SMS de Nequi Negocios, Bre-B y transferencias con deduplicación automática."
+                                else
+                                    "Activa el permiso directo de SMS para máxima velocidad, o si Android 13/14 bloquea permisos de SMS, habilítalo en Permisos de la App.",
+                                color = TextGrayLight,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp
+                            )
+
+                            if (!isSmsPermissionGranted) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = onRequestSmsPermission,
+                                        colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(
+                                            text = "Autorizar SMS",
+                                            color = DarkBackground,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                    OutlinedButton(
+                                        onClick = onOpenAppDetailsSettings,
+                                        shape = RoundedCornerShape(10.dp),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, GoldPrimary),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(
+                                            text = "Permisos de App",
+                                            color = GoldPrimary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // =========================================================================
@@ -1030,6 +1178,39 @@ fun SettingsScreen(
                         enabled = settings.ttsEnabled,
                         onCheckedChange = { isEnabled ->
                             onSettingsChanged { it.copy(includeThankYou = isEnabled) }
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = GoldPrimary,
+                            disabledCheckedThumbColor = GoldPrimary.copy(alpha = 0.5f)
+                        )
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // 4) Opción 3: Anunciar nombre del remitente (Nequi SMS / Notificación)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Anunciar nombre de quien envía",
+                            color = if (settings.ttsEnabled) TextWhite else TextMuted,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Lee el nombre del cliente cuando aparece en el SMS o notificación de Nequi",
+                            color = if (settings.ttsEnabled) TextGray else TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Switch(
+                        checked = settings.announceSenderName,
+                        enabled = settings.ttsEnabled,
+                        onCheckedChange = { isEnabled ->
+                            onSettingsChanged { it.copy(announceSenderName = isEnabled) }
                         },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = GoldPrimary,

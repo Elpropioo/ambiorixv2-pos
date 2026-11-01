@@ -83,20 +83,37 @@ object NequiSmsParser {
     )
 
     /**
-     * Patrón secundario para variantes futuras directas de Nequi:
+     * Patrón secundario para variantes directas de Nequi:
      * ej: "Nequi: Recibiste $35.000 de JUAN PEREZ el 19/10/2026 a las 03:45 p.m."
      * o "Recibiste $1.250.000 de Juan Carlos Gómez exitosamente."
+     * o "¡Te llegó plata! Recibiste $25.000 de María López en tu Nequi. Tu nuevo saldo..."
      */
     private val NEQUI_SECONDARY_PATTERN = Regex(
         "(?i)^\\s*(?:Notificaci[oó]n\\s+Nequi\\s*:\\s*|Nequi\\s*:\\s*)?" +
-                "(?:recibiste|has\\s+recibido|te\\s+enviaron|te\\s+pasaron)\\s+\\$\\s*([0-9.,]+)\\s+de\\s+" +
+                "(?:¡?te\\s+lleg[oó]\\s+plata!?\\s*:?\\s*|¡?te\\s+enviaron\\s+plata!?\\s*:?\\s*)?" +
+                "(?:recibiste|recibi[oó]|has\\s+recibido|te\\s+enviaron|te\\s+pasaron|te\\s+transfirieron)" +
+                "(?:\\s+(?:un\\s+pago|una\\s+transferencia|plata|dinero)\\s+(?:por|de))?\\s+" +
+                "(?:COP\\s*)?\\$\\s*([0-9.,]+)\\s+de\\s+" +
                 "([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\\s]+?)" +
                 "(?:\\s+(?:exitosamente|con\\s+[eé]xito|exitoso|exitosa))?" +
-                "(?:\\s+(?:en|a)\\s+tu\\s+(?:cuenta(?:\\s+Nequi)?|Nequi(?:\\s+Negocios)?))?" +
+                "(?:\\s+(?:en|a)\\s+(?:tu|su)\\s+(?:cuenta(?:\\s+Nequi)?|Nequi(?:\\s+Negocios)?))?" +
                 "(?:\\s+el\\s+([0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}(?:\\s+a\\s+las\\s+[0-9]{1,2}:[0-9]{2}(?:\\s*[a-z. ]+)?)?))?" +
                 "(?:\\s+a\\s+trav[eé]s\\s+de\\s+([A-Za-z0-9\\-_ ]+?))?" +
                 "(?:\\s+(?:exitosamente|con\\s+[eé]xito|exitoso|exitosa))?" +
-                "(?:\\.?\\s*(?:Ref|Referencia)\\.?\\s*:?\\s*[A-Za-z0-9\\-]+)?\\.?\\s*$"
+                "(?:[.,;]?\\s*(?:(?:Ref|Referencia|Saldo|Tu\\s+nuevo\\s+saldo|Conoce)\\b.*)?)?\\s*$"
+    )
+
+    /**
+     * Patrón terciario cuando el nombre del remitente aparece antes del verbo:
+     * ej: "¡Te enviaron plata! Carlos Rodríguez te transfirió $12.000 a tu Nequi."
+     */
+    private val NEQUI_SENDER_FIRST_PATTERN = Regex(
+        "(?i)^\\s*(?:Notificaci[oó]n\\s+Nequi\\s*:\\s*|Nequi\\s*:\\s*)?" +
+                "(?:¡?te\\s+lleg[oó]\\s+plata!?\\s*:?\\s*|¡?te\\s+enviaron\\s+plata!?\\s*:?\\s*)?" +
+                "([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\\s]+?)\\s+te\\s+(?:transfiri[oó]|envi[oó]|pas[oó]|pag[oó]|consign[oó])\\s+" +
+                "(?:COP\\s*)?\\$\\s*([0-9.,]+)" +
+                "(?:\\s+(?:a|en)\\s+(?:tu|su)\\s+(?:cuenta(?:\\s+Nequi)?|Nequi(?:\\s+Negocios)?))?" +
+                "(?:[.,;]?\\s*.*)?$"
     )
 
 
@@ -128,7 +145,7 @@ object NequiSmsParser {
         }
 
         // 3. Verificar que contenga al menos un indicador monetario de recepción
-        if (!lower.contains("$") && !lower.contains("recibi")) {
+        if (!lower.contains("$") && !lower.contains("recibi") && !lower.contains("transfiri") && !lower.contains("enviar")) {
             return SmsPaymentParseResult.Ignored("Mensaje no contiene indicador de dinero recibido ni símbolo '$'")
         }
 
@@ -197,6 +214,28 @@ object NequiSmsParser {
                     rawBody = body
                 )
             )
+        }
+
+        // 6. Evaluar con patrón terciario (<Nombre> te transfirió / te envió $<Monto>)
+        val senderFirstMatch = NEQUI_SENDER_FIRST_PATTERN.matchEntire(normalized)
+        if (senderFirstMatch != null) {
+            val rawSenderName = cleanSenderName(senderFirstMatch.groups[1]?.value)
+            val rawAmount = senderFirstMatch.groups[2]?.value
+
+            val amount = parseColombianAmount(rawAmount)
+            if (amount != null && amount > 0L && isValidPersonName(rawSenderName)) {
+                return SmsPaymentParseResult.Success(
+                    ParsedSmsPayment(
+                        amount = amount,
+                        senderName = rawSenderName!!,
+                        receiverBusiness = null,
+                        transactionDateTimeText = null,
+                        channel = "Nequi",
+                        originatingAddress = originatingAddress,
+                        rawBody = body
+                    )
+                )
+            }
         }
 
         return SmsPaymentParseResult.Ignored("El contenido del SMS no coincide con la estructura de notificación de pago de Nequi")

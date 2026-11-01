@@ -1,12 +1,18 @@
 package com.ambiorix.pay
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -40,12 +46,20 @@ class SettingsActivity : ComponentActivity() {
                 val isTtsReady by soundAnnouncer.isTtsReady.collectAsStateWithLifecycle()
                 val ttsStatusDetail by soundAnnouncer.ttsStatusDetail.collectAsStateWithLifecycle()
                 var isNotificationAccessGranted by remember { mutableStateOf(checkNotificationAccess()) }
+                var isSmsPermissionGranted by remember { mutableStateOf(checkSmsPermission()) }
+
+                val smsPermissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestMultiplePermissions()
+                ) { permissions ->
+                    isSmsPermissionGranted = permissions[Manifest.permission.RECEIVE_SMS] == true || checkSmsPermission()
+                }
 
                 // Actualizar verificación de permisos al regresar de los ajustes del sistema
                 DisposableEffect(Unit) {
                     val observer = LifecycleEventObserver { _, event ->
                         if (event == Lifecycle.Event.ON_RESUME) {
                             isNotificationAccessGranted = checkNotificationAccess()
+                            isSmsPermissionGranted = checkSmsPermission()
                         }
                     }
                     lifecycle.addObserver(observer)
@@ -72,12 +86,23 @@ class SettingsActivity : ComponentActivity() {
                         isTtsReady = isTtsReady,
                         ttsStatusDetail = ttsStatusDetail,
                         isNotificationAccessGranted = isNotificationAccessGranted,
+                        isSmsPermissionGranted = isSmsPermissionGranted,
                         onSettingsChanged = { transform ->
                             settingsRepository.updateSettings(transform)
                         },
                         onBackClick = { finish() },
                         onOpenNotificationSettings = {
                             openNotificationAccessSettings()
+                        },
+                        onRequestSmsPermission = {
+                            if (!checkSmsPermission()) {
+                                smsPermissionLauncher.launch(arrayOf(Manifest.permission.RECEIVE_SMS))
+                            } else {
+                                isSmsPermissionGranted = true
+                            }
+                        },
+                        onOpenAppDetailsSettings = {
+                            openAppDetailsSettings()
                         },
                         onOpenScreenPinningSettings = {
                             openSecuritySettings()
@@ -108,9 +133,29 @@ class SettingsActivity : ComponentActivity() {
         return enabledPackages.contains(packageName)
     }
 
+    private fun checkSmsPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECEIVE_SMS
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
     private fun openNotificationAccessSettings() {
         try {
             val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+            startActivity(intent)
+        } catch (e: Exception) {
+            val intent = Intent(Settings.ACTION_SETTINGS)
+            startActivity(intent)
+        }
+    }
+
+    private fun openAppDetailsSettings() {
+        try {
+            val intent = Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", packageName, null)
+            )
             startActivity(intent)
         } catch (e: Exception) {
             val intent = Intent(Settings.ACTION_SETTINGS)
